@@ -7,29 +7,25 @@ import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class TelegramClient {
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
-    private final String token;
     private final String baseUrl;
-    private final String fileBaseUrl;
 
     public TelegramClient(String token) {
-        this.token = token;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
-        this.mapper = new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+        this.mapper = new ObjectMapper()
+                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         this.baseUrl = "https://api.telegram.org/bot" + token + "/";
-        this.fileBaseUrl = "https://api.telegram.org/file/bot" + token + "/";
     }
 
     public List<Update> getUpdates(long offset, int timeoutSeconds) throws IOException, InterruptedException {
@@ -38,6 +34,7 @@ public class TelegramClient {
                 "timeout", timeoutSeconds,
                 "allowed_updates", List.of("message", "callback_query")
         );
+
         JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Update[].class);
         ApiResponse<Update[]> response = post("getUpdates", body, type);
         if (!response.ok()) {
@@ -56,7 +53,7 @@ public class TelegramClient {
 
     public Integer sendMessage(long chatId, String text, Object replyMarkup, boolean forceReply) {
         try {
-            LinkedHashMap<String, Object> body = new LinkedHashMap<>();
+            java.util.LinkedHashMap<String, Object> body = new java.util.LinkedHashMap<>();
             body.put("chat_id", chatId);
             body.put("text", text);
             if (replyMarkup != null) {
@@ -64,6 +61,7 @@ public class TelegramClient {
             } else if (forceReply) {
                 body.put("reply_markup", Map.of("force_reply", true, "selective", true));
             }
+
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Message.class);
             ApiResponse<Message> response = post("sendMessage", body, type);
             if (!response.ok() || response.result() == null) {
@@ -77,24 +75,18 @@ public class TelegramClient {
         }
     }
 
-    public boolean deleteMessage(long chatId, int messageId) {
-        try {
-            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Boolean.class);
-            ApiResponse<Boolean> response = post("deleteMessage", Map.of("chat_id", chatId, "message_id", messageId), type);
-            return response.ok();
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     public void editMessageReplyMarkup(long chatId, int messageId, Object replyMarkup) {
         try {
-            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
-            post("editMessageReplyMarkup", Map.of(
+            Map<String, Object> body = Map.of(
                     "chat_id", chatId,
                     "message_id", messageId,
                     "reply_markup", replyMarkup == null ? Map.of("inline_keyboard", List.of()) : replyMarkup
-            ), type);
+            );
+            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
+            ApiResponse<Object> response = post("editMessageReplyMarkup", body, type);
+            if (!response.ok()) {
+                System.err.println("editMessageReplyMarkup failed: " + response.description());
+            }
         } catch (Exception e) {
             System.err.println("editMessageReplyMarkup exception: " + e.getMessage());
         }
@@ -106,29 +98,13 @@ public class TelegramClient {
                     ? Map.of("callback_query_id", callbackQueryId)
                     : Map.of("callback_query_id", callbackQueryId, "text", text, "show_alert", false);
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
-            post("answerCallbackQuery", body, type);
+            ApiResponse<Object> response = post("answerCallbackQuery", body, type);
+            if (!response.ok()) {
+                System.err.println("answerCallbackQuery failed: " + response.description());
+            }
         } catch (Exception e) {
             System.err.println("answerCallbackQuery exception: " + e.getMessage());
         }
-    }
-
-    public String getFilePath(String fileId) throws IOException, InterruptedException {
-        JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, FileInfo.class);
-        ApiResponse<FileInfo> response = post("getFile", Map.of("file_id", fileId), type);
-        if (!response.ok() || response.result() == null || response.result().filePath() == null) {
-            throw new IllegalStateException("getFile failed: " + response.description());
-        }
-        return response.result().filePath();
-    }
-
-    public byte[] downloadFile(String filePath) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(fileBaseUrl + filePath))
-                .timeout(Duration.ofSeconds(70))
-                .GET()
-                .build();
-        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        return response.body();
     }
 
     private <T> T post(String method, Object payload, JavaType type) throws IOException, InterruptedException {
@@ -143,32 +119,12 @@ public class TelegramClient {
         return mapper.readValue(response.body(), type);
     }
 
-    public static Map<String, Object> inlineKeyboard(List<List<Map<String, Object>>> rows) {
+    public static Map<String, Object> inlineKeyboard(List<List<Map<String, String>>> rows) {
         return Map.of("inline_keyboard", rows);
     }
 
-    public static Map<String, Object> keyboard(List<List<Map<String, Object>>> rows, boolean resize, boolean oneTime) {
-        return Map.of(
-                "keyboard", rows,
-                "resize_keyboard", resize,
-                "one_time_keyboard", oneTime
-        );
-    }
-
-    public static Map<String, Object> removeKeyboard() {
-        return Map.of("remove_keyboard", true);
-    }
-
-    public static Map<String, Object> button(String text, String callbackData) {
+    public static Map<String, String> button(String text, String callbackData) {
         return Map.of("text", text, "callback_data", callbackData);
-    }
-
-    public static Map<String, Object> webAppKeyboardButton(String text, String url) {
-        return Map.of("text", text, "web_app", Map.of("url", url));
-    }
-
-    public static String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -178,19 +134,10 @@ public class TelegramClient {
     public record Update(long updateId, Message message, CallbackQuery callbackQuery) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Message(Integer messageId, Chat chat, User from, String text, Document document, WebAppData webAppData) {}
+    public record Message(Integer messageId, Chat chat, User from, String text) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record CallbackQuery(String id, User from, Message message, String data) {}
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Document(String fileId, String fileName, String mimeType, Long fileSize) {}
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public record WebAppData(String data, String buttonText) {}
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public record FileInfo(String fileId, Integer fileSize, String filePath) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Chat(long id, String type, String username, String firstName, String title) {}

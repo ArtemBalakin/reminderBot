@@ -4,6 +4,7 @@ public record UserProfile(
         long chatId,
         String username,
         String firstName,
-        String zoneId
+        String zoneId,
+        boolean alertsEnabled
 ) {
 }

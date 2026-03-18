@@ -10,6 +10,8 @@ public record ActivePrompt(
         Instant scheduledFor,
         Instant nextPingAt,
         String state,
-        Integer messageId
+        Integer messageId,
+        int alertBroadcastCount,
+        boolean endOfDayAlertSent
 ) {
 }
