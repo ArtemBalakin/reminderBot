@@ -12,13 +12,13 @@ import java.nio.file.StandardCopyOption;
 public class JsonStore<T> {
     private final Path path;
     private final Class<T> type;
-    private final T emptyValue;
+    private final T empty;
     private final ObjectMapper mapper;
 
-    public JsonStore(Path path, Class<T> type, T emptyValue) {
+    public JsonStore(Path path, Class<T> type, T empty) {
         this.path = path;
         this.type = type;
-        this.emptyValue = emptyValue;
+        this.empty = empty;
         this.mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
@@ -29,23 +29,23 @@ public class JsonStore<T> {
         try {
             if (Files.notExists(path)) {
                 Files.createDirectories(path.getParent());
-                save(emptyValue);
-                return emptyValue;
+                save(empty);
+                return empty;
             }
             return mapper.readValue(path.toFile(), type);
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to load " + path, e);
+            throw new IllegalStateException("Failed to load json from " + path, e);
         }
     }
 
-    public synchronized void save(T data) {
+    public synchronized void save(T value) {
         try {
             Files.createDirectories(path.getParent());
-            Path temp = path.resolveSibling(path.getFileName().toString() + ".tmp");
-            mapper.writeValue(temp.toFile(), data);
-            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+            mapper.writeValue(tmp.toFile(), value);
+            Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to save " + path, e);
+            throw new IllegalStateException("Failed to save json to " + path, e);
         }
     }
 
