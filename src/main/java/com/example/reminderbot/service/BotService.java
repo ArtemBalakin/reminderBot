@@ -3,7 +3,9 @@ package com.example.reminderbot.service;
 import com.example.reminderbot.model.*;
 import com.example.reminderbot.storage.JsonStore;
 import com.example.reminderbot.telegram.TelegramClient;
+import com.fasterxml.jackson.databind.JsonNode;
 
+import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
@@ -12,18 +14,19 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class BotService {
-    private static final DateTimeFormatter TIME_SHORT = DateTimeFormatter.ofPattern("HH:mm");
-    private static final DateTimeFormatter DATE_SHORT = DateTimeFormatter.ofPattern("dd.MM");
-    private static final DateTimeFormatter DATE_TIME_SHORT = DateTimeFormatter.ofPattern("dd.MM HH:mm");
+    private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+    private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+    private static final Duration REPING_DELAY = Duration.ofMinutes(5);
     private static final String STATE_WAITING = "WAITING";
     private static final String STATE_SNOOZED = "SNOOZED";
     private static final String STATE_IN_PROGRESS = "IN_PROGRESS";
-    private static final Duration RE_PING_DELAY = Duration.ofMinutes(5);
 
     private final TelegramClient telegram;
     private final JsonStore<BotState> stateStore;
     private final JsonStore<Catalog> catalogStore;
     private final ZoneId defaultZone;
+    private final String appBaseUrl;
 
     private BotState state;
     private Catalog catalog;
@@ -31,11 +34,13 @@ public class BotService {
     public BotService(TelegramClient telegram,
                       JsonStore<BotState> stateStore,
                       JsonStore<Catalog> catalogStore,
-                      ZoneId defaultZone) {
+                      ZoneId defaultZone,
+                      String appBaseUrl) {
         this.telegram = telegram;
         this.stateStore = stateStore;
         this.catalogStore = catalogStore;
         this.defaultZone = defaultZone;
+        this.appBaseUrl = appBaseUrl.endsWith("/") ? appBaseUrl.substring(0, appBaseUrl.length() - 1) : appBaseUrl;
         this.state = stateStore.load();
         this.catalog = catalogStore.load();
     }
@@ -61,69 +66,44 @@ public class BotService {
 
     public void processDueItems() {
         List<DueAction> actions = new ArrayList<>();
-
         synchronized (this) {
             Instant now = Instant.now();
-            Set<String> blockedSubscriptions = state.prompts().stream()
-                    .map(ActivePrompt::subscriptionId)
-                    .collect(Collectors.toSet());
+            Set<String> blockedSubs = state.prompts().stream().map(ActivePrompt::subscriptionId).collect(Collectors.toSet());
 
             for (Subscription sub : state.subscriptions()) {
-                if (!sub.active() || sub.oneTimeDone()) {
+                if (!sub.active() || sub.oneTimeDone() || sub.nextRunAt() == null || sub.nextRunAt().isAfter(now)) {
                     continue;
                 }
-                if (sub.nextRunAt() != null && !sub.nextRunAt().isAfter(now) && !blockedSubscriptions.contains(sub.id())) {
-                    TaskDefinition task = findTask(sub.taskId());
-                    if (task == null) {
-                        continue;
-                    }
-                    ActivePrompt prompt = new ActivePrompt(
-                            shortId(),
-                            sub.id(),
-                            sub.taskId(),
-                            sub.chatId(),
-                            sub.nextRunAt(),
-                            now.plus(RE_PING_DELAY),
-                            STATE_WAITING,
-                            null
-                    );
-                    state.prompts().add(prompt);
-                    blockedSubscriptions.add(sub.id());
-                    actions.add(new DueAction(prompt, task, PromptReason.FIRST_PING));
+                if (blockedSubs.contains(sub.id())) {
+                    continue;
                 }
+                TaskDefinition task = findTask(sub.taskId());
+                if (task == null) continue;
+                ActivePrompt prompt = new ActivePrompt(
+                        shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(), now.plus(REPING_DELAY), STATE_WAITING, null
+                );
+                state.prompts().add(prompt);
+                blockedSubs.add(sub.id());
+                actions.add(new DueAction(prompt, task, PromptReason.FIRST));
             }
 
             for (int i = 0; i < state.prompts().size(); i++) {
                 ActivePrompt prompt = state.prompts().get(i);
-                if (prompt.nextPingAt() == null || prompt.nextPingAt().isAfter(now)) {
-                    continue;
-                }
+                if (prompt.nextPingAt() == null || prompt.nextPingAt().isAfter(now)) continue;
                 TaskDefinition task = findTask(prompt.taskId());
-                if (task == null) {
-                    continue;
-                }
-                PromptReason reason;
-                String nextState = STATE_WAITING;
-                if (STATE_SNOOZED.equals(prompt.state())) {
-                    reason = PromptReason.SNOOZE_FINISHED;
-                } else if (STATE_IN_PROGRESS.equals(prompt.state())) {
-                    reason = PromptReason.CHECK_AFTER_WORK;
-                } else {
-                    reason = PromptReason.REMINDER_AGAIN;
-                }
-                state.prompts().set(i, new ActivePrompt(
-                        prompt.id(),
-                        prompt.subscriptionId(),
-                        prompt.taskId(),
-                        prompt.chatId(),
-                        prompt.scheduledFor(),
-                        now.plus(RE_PING_DELAY),
-                        nextState,
-                        prompt.messageId()
-                ));
-                actions.add(new DueAction(state.prompts().get(i), task, reason));
+                if (task == null) continue;
+                PromptReason reason = switch (prompt.state()) {
+                    case STATE_SNOOZED -> PromptReason.SNOOZE_FINISHED;
+                    case STATE_IN_PROGRESS -> PromptReason.CHECK_AFTER_WORK;
+                    default -> PromptReason.REPEAT;
+                };
+                ActivePrompt updated = new ActivePrompt(
+                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
+                        now.plus(REPING_DELAY), STATE_WAITING, prompt.messageId()
+                );
+                state.prompts().set(i, updated);
+                actions.add(new DueAction(updated, task, reason));
             }
-
             saveState();
         }
 
@@ -134,167 +114,123 @@ public class BotService {
 
     private void handleMessage(TelegramClient.Message message) {
         UserProfile profile = registerUser(message);
+        long chatId = profile.chatId();
+
+        if (message.webAppData() != null && message.webAppData().data() != null) {
+            handleWebAppPayload(profile, message);
+            return;
+        }
+
+        UserSession session = synchronizedSession(chatId);
+        if (session != null && session.type() == SessionType.IMPORT_CATALOG_FILE && message.document() != null) {
+            handleImportFile(profile, message.document());
+            return;
+        }
+
         String text = message.text() == null ? "" : message.text().trim();
+        if (text.equals("/cancel")) {
+            clearSession(chatId);
+            telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", TelegramClient.removeKeyboard());
+            return;
+        }
+
+        if (!text.isBlank() && !text.startsWith("/") && session != null) {
+            switch (session.type()) {
+                case NEW_TASK_TITLE -> {
+                    handleNewTaskTitle(profile, text);
+                    return;
+                }
+                case NEW_TASK_INTERVAL -> {
+                    handleNewTaskInterval(profile, text);
+                    return;
+                }
+                case NEW_TASK_NOTE -> {
+                    handleNewTaskNote(profile, text);
+                    return;
+                }
+                default -> {
+                }
+            }
+        }
 
         if (text.isBlank()) {
             return;
         }
 
-        UserSession session;
-        synchronized (this) {
-            session = state.sessions().get(profile.chatId());
-        }
-        if (session != null && !text.startsWith("/") && session.type() == SessionType.IMPORT_CATALOG) {
-            handleCatalogImport(profile, text);
-            return;
-        }
-
         if (text.equals("/start")) {
-            telegram.sendMessage(profile.chatId(), startText(), startKeyboard());
+            telegram.sendMessage(chatId, startText(), startKeyboard());
             return;
         }
         if (text.equals("/help")) {
-            telegram.sendMessage(profile.chatId(), helpText());
+            telegram.sendMessage(chatId, helpText());
             return;
         }
         if (text.equals("/tasks")) {
-            sendTasksPage(profile.chatId(), 0);
+            sendTasksPage(chatId, 0);
             return;
         }
         if (text.startsWith("/task ")) {
-            handleTaskCard(profile.chatId(), text.substring(6).trim());
-            return;
-        }
-        if (text.startsWith("/sub ")) {
-            handleSubscribeEntry(profile.chatId(), text.substring(5).trim());
-            return;
-        }
-        if (text.startsWith("/unsub ")) {
-            handleUnsub(profile.chatId(), text.substring(7).trim());
+            showTaskCard(chatId, text.substring(6).trim());
             return;
         }
         if (text.equals("/subs")) {
-            telegram.sendMessage(profile.chatId(), subscriptionsText(profile.chatId()));
+            telegram.sendMessage(chatId, subscriptionsText(chatId));
             return;
         }
         if (text.startsWith("/who ")) {
-            handleWho(profile.chatId(), text.substring(5).trim());
+            handleWho(chatId, text.substring(5).trim());
             return;
         }
         if (text.equals("/tz")) {
-            telegram.sendMessage(profile.chatId(), timezoneText(profile.chatId()), timezoneKeyboard());
+            telegram.sendMessage(chatId, timezoneText(chatId), timezoneKeyboard());
             return;
         }
         if (text.startsWith("/tzset ")) {
-            handleTimezoneSet(profile.chatId(), text.substring(7).trim());
+            handleTimezoneSet(chatId, text.substring(7).trim());
             return;
         }
         if (text.equals("/import")) {
-            synchronized (this) {
-                state.sessions().put(profile.chatId(), new UserSession(SessionType.IMPORT_CATALOG, null));
-                saveState();
-            }
-            telegram.sendMessage(profile.chatId(), "Пришли следующим сообщением JSON с полем tasks. Старый каталог будет заменён.");
+            state.sessions().put(chatId, UserSession.of(SessionType.IMPORT_CATALOG_FILE));
+            saveState();
+            telegram.sendMessage(chatId,
+                    "Пришли одним следующим сообщением JSON-файл каталога. Формат: объект с полем tasks.\\n\\n" +
+                            "Например: {\"tasks\":[{\"title\":\"Мыть пол\",...}]}");
+            return;
+        }
+        if (text.equals("/new")) {
+            state.sessions().put(chatId, UserSession.of(SessionType.NEW_TASK_TITLE));
+            saveState();
+            telegram.sendMessage(chatId, "Как назвать новое дело? Просто пришли название одним сообщением.");
             return;
         }
         if (text.equals("/reload")) {
-            synchronized (this) {
-                this.catalog = catalogStore.load();
-            }
-            telegram.sendMessage(profile.chatId(), "Каталог перечитан. Всего дел: " + catalog.tasks().size());
-            return;
-        }
-        if (text.startsWith("/ping ")) {
-            handleManualPing(profile.chatId(), text.substring(6).trim());
+            synchronized (this) { this.catalog = catalogStore.load(); }
+            telegram.sendMessage(chatId, "Каталог перечитан. Дел: " + catalog.tasks().size());
             return;
         }
 
-        telegram.sendMessage(profile.chatId(), "Не понял. Нажми /tasks или /help.", startKeyboard());
+        telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.", startKeyboard());
     }
 
     private void handleCallback(TelegramClient.CallbackQuery callback) {
-        String data = callback.data() == null ? "" : callback.data();
         long chatId = callback.message() != null && callback.message().chat() != null
                 ? callback.message().chat().id()
                 : callback.from().id();
-
+        String data = callback.data() == null ? "" : callback.data();
         try {
-            if (data.equals("noop")) {
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
             if (data.startsWith("TASK_PAGE:")) {
-                int page = Integer.parseInt(data.substring("TASK_PAGE:".length()));
-                sendTasksPage(chatId, page);
+                sendTasksPage(chatId, Integer.parseInt(data.substring(10)));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
             if (data.startsWith("TASK_SHOW:")) {
-                handleTaskCard(chatId, data.substring("TASK_SHOW:".length()));
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.startsWith("TASK_CFG:")) {
-                startSubscribeFlow(chatId, data.substring("TASK_CFG:".length()));
+                showTaskCard(chatId, data.substring(10));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
             if (data.startsWith("SUB_START:")) {
-                startSubscribeFlow(chatId, data.substring("SUB_START:".length()));
+                startMiniAppSubscription(chatId, data.substring(10));
                 telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.startsWith("SUB_DAILY_HOUR:")) {
-                String[] parts = data.split(":");
-                handleDailyHourPick(chatId, parts[1], Integer.parseInt(parts[2]));
-                telegram.answerCallbackQuery(callback.id(), "Обновил часы");
-                sendDailyHourPicker(chatId, findTask(parts[1]));
-                return;
-            }
-            if (data.startsWith("SUB_DAILY_CLEAR:")) {
-                clearDailySelection(chatId, data.substring("SUB_DAILY_CLEAR:".length()));
-                telegram.answerCallbackQuery(callback.id(), "Очистил");
-                return;
-            }
-            if (data.startsWith("SUB_DAILY_DONE:")) {
-                handleTaskCard(chatId, data.substring("SUB_DAILY_DONE:".length()));
-                telegram.answerCallbackQuery(callback.id(), "Готово");
-                return;
-            }
-            if (data.startsWith("CALNAV:")) {
-                String[] parts = data.split(":");
-                sendCalendar(chatId, parts[1], YearMonth.parse(parts[2], DateTimeFormatter.ofPattern("yyyyMM")));
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.startsWith("DATE_PICK:")) {
-                String[] parts = data.split(":");
-                LocalDate date = LocalDate.parse(parts[2], DateTimeFormatter.BASIC_ISO_DATE);
-                sendHourPickerForDate(chatId, parts[1], date);
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.startsWith("DATE_HOUR:")) {
-                String[] parts = data.split(":");
-                LocalDate date = LocalDate.parse(parts[2], DateTimeFormatter.BASIC_ISO_DATE);
-                int hour = Integer.parseInt(parts[3]);
-                handleDatedSubscription(chatId, parts[1], date, hour);
-                telegram.answerCallbackQuery(callback.id(), "Сохранил");
-                return;
-            }
-            if (data.equals("SUBS")) {
-                telegram.sendMessage(chatId, subscriptionsText(chatId));
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.equals("TZ_MENU")) {
-                telegram.sendMessage(chatId, timezoneText(chatId), timezoneKeyboard());
-                telegram.answerCallbackQuery(callback.id(), null);
-                return;
-            }
-            if (data.startsWith("TZ:")) {
-                handleTimezoneSet(chatId, data.substring(3));
-                telegram.answerCallbackQuery(callback.id(), "Таймзона обновлена");
                 return;
             }
             if (data.startsWith("WHO:")) {
@@ -307,18 +243,28 @@ public class BotService {
                 telegram.answerCallbackQuery(callback.id(), "Удалено");
                 return;
             }
-            if (data.startsWith("MANUAL:")) {
-                handleManualPing(chatId, data.substring(7));
+            if (data.equals("TZ_MENU")) {
+                telegram.sendMessage(chatId, timezoneText(chatId), timezoneKeyboard());
+                telegram.answerCallbackQuery(callback.id(), null);
+                return;
+            }
+            if (data.startsWith("TZ:")) {
+                handleTimezoneSet(chatId, data.substring(3));
+                telegram.answerCallbackQuery(callback.id(), "Таймзона обновлена");
+                return;
+            }
+            if (data.startsWith("NEW_KIND:")) {
+                handleNewKind(chatId, data.substring(9));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
             if (data.startsWith("PROMPT_DONE:")) {
-                handlePromptDone(callback.id(), data.substring("PROMPT_DONE:".length()), chatId,
+                handlePromptDone(callback.id(), data.substring(12), chatId,
                         callback.message() == null ? null : callback.message().messageId());
                 return;
             }
             if (data.startsWith("PROMPT_MORE:")) {
-                sendSnoozeHoursPicker(chatId, data.substring("PROMPT_MORE:".length()));
+                sendSnoozeHoursPicker(chatId, data.substring(12));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
@@ -328,7 +274,7 @@ public class BotService {
                 return;
             }
             if (data.startsWith("PROMPT_GO:")) {
-                sendGoDoingPicker(chatId, data.substring("PROMPT_GO:".length()));
+                sendGoDoingPicker(chatId, data.substring(10));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
@@ -341,315 +287,339 @@ public class BotService {
             telegram.answerCallbackQuery(callback.id(), "Ошибка: " + e.getMessage());
             return;
         }
-
         telegram.answerCallbackQuery(callback.id(), "Неизвестная кнопка");
     }
 
-    private void handleTaskCard(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
-        }
-        int number = taskNumber(task.id());
-        long subscribers = state.subscriptions().stream()
-                .filter(s -> s.taskId().equals(task.id()) && s.active())
-                .count();
-
-        Subscription own = state.subscriptions().stream()
-                .filter(s -> s.chatId() == chatId && s.taskId().equals(task.id()) && s.active())
-                .findFirst()
-                .orElse(null);
-
-        String ownText = own == null
-                ? "У тебя это дело пока не настроено. Нажми кнопку ниже — дальше бот сам проведёт по кнопкам."
-                : ("Твоя настройка:\n" + scheduleHuman(own, task));
-
-        String text = """
-                %s
-
-                Номер: %d
-                Как часто: %s
-                Формат: %s
-                Подписчиков: %d
-
-                %s
-                """.formatted(
-                task.title(),
-                number,
-                frequencyText(task),
-                taskKindText(task.kind()),
-                subscribers,
-                ownText
-        );
-
-        List<List<Map<String, String>>> rows = new ArrayList<>();
-        if (task.kind() == TaskKind.MANUAL) {
-            rows.add(List.of(TelegramClient.button("Пингануть сейчас", "MANUAL:" + number)));
-        } else {
-            rows.add(List.of(
-                    TelegramClient.button(own == null ? "🗓 Настроить" : "🗓 Изменить дату и время", "TASK_CFG:" + number)
-            ));
-            if (own != null) {
-                rows.add(List.of(TelegramClient.button("Удалить настройку", "UNSUB:" + number)));
-            }
-        }
-        rows.add(List.of(TelegramClient.button("Кто подписан", "WHO:" + number), TelegramClient.button("К списку дел", "TASK_PAGE:0")));
-        telegram.sendMessage(chatId, text, TelegramClient.inlineKeyboard(rows), false);
-    }
-
-    private void handleSubscribeEntry(long chatId, String ref) {
-        startSubscribeFlow(chatId, ref);
-    }
-
-    private void startSubscribeFlow(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
-        }
-        if (task.kind() == TaskKind.MANUAL) {
-            telegram.sendMessage(chatId, "Для этого дела нет расписания. Используй кнопку «Пингануть сейчас» или /ping <номер>.");
-            return;
-        }
-        if (task.kind() == TaskKind.RECURRING && task.schedule().unit() == FrequencyUnit.DAY) {
-            sendDailyHourPicker(chatId, task);
-            return;
-        }
-        sendCalendar(chatId, task.id(), YearMonth.now(ZoneId.of(userZone(chatId))));
-    }
-
-    private void sendDailyHourPicker(long chatId, TaskDefinition task) {
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
-        }
-        Subscription existing = findUserSubscription(chatId, task.id());
-        String current = existing == null || existing.dailyTimes().isEmpty()
-                ? "Пока часы не выбраны."
-                : "Сейчас выбрано: " + String.join(", ", existing.dailyTimes());
-        String text = """
-                %s
-
-                Выбери один или несколько часов кнопками ниже.
-                Если нажать на уже выбранный час ещё раз — он уберётся.
-
-                %s
-                """.formatted(task.title(), current);
-        telegram.sendMessage(chatId, text, hourKeyboard(chatId, task.id(), null, true), false);
-    }
-
-    private void sendHourPickerForDate(long chatId, String taskId, LocalDate date) {
-        TaskDefinition task = findTask(taskId);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
-        }
-        String text = "Выбрана дата: " + date.format(DATE_SHORT) + "\nТеперь выбери час.";
-        telegram.sendMessage(chatId, text, hourKeyboard(chatId, task.id(), date, false), false);
-    }
-
-    private void handleDailyHourPick(long chatId, String taskId, int hour) {
-        TaskDefinition task = findTask(taskId);
-        UserProfile profile = synchronizedProfile(chatId);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
-        }
-        LocalTime picked = LocalTime.of(hour, 0);
-        ZoneId zone = ZoneId.of(profile.zoneId());
-        synchronized (this) {
-            Subscription existing = findUserSubscription(chatId, task.id());
-            TreeSet<String> hours = new TreeSet<>();
-            if (existing != null) {
-                hours.addAll(existing.dailyTimes());
-            }
-            String formatted = picked.format(TIME_SHORT);
-            if (hours.contains(formatted)) {
-                hours.remove(formatted);
-            } else {
-                hours.add(formatted);
-            }
-
-            if (hours.isEmpty()) {
-                if (existing != null) {
-                    state.subscriptions().removeIf(s -> s.id().equals(existing.id()));
-                }
+    private void handleImportFile(UserProfile profile, TelegramClient.Document document) {
+        try {
+            String filePath = telegram.getFilePath(document.fileId());
+            byte[] bytes = telegram.downloadFile(filePath);
+            Catalog imported = stateStore.mapper().readValue(new String(bytes, StandardCharsets.UTF_8), Catalog.class);
+            synchronized (this) {
+                this.catalog = imported;
+                catalogStore.save(imported);
+                state.sessions().remove(profile.chatId());
                 saveState();
-                return;
             }
+            telegram.sendMessage(profile.chatId(), "Файл импортирован. Дел: " + imported.tasks().size(), TelegramClient.removeKeyboard());
+        } catch (Exception e) {
+            telegram.sendMessage(profile.chatId(), "Не смог импортировать файл: " + e.getMessage());
+        }
+    }
 
-            Instant next = computeNextDaily(new ArrayList<>(hours), task.schedule().interval(), zone, Instant.now());
-            Subscription updated = new Subscription(
-                    existing == null ? shortId() : existing.id(),
-                    task.id(),
-                    chatId,
-                    new ArrayList<>(hours),
-                    null,
-                    null,
-                    profile.zoneId(),
-                    next,
-                    true,
-                    false
+    private void handleWebAppPayload(UserProfile profile, TelegramClient.Message message) {
+        long chatId = profile.chatId();
+        UserSession session = synchronizedSession(chatId);
+        if (session == null || session.type() != SessionType.WAITING_WEBAPP_SUBSCRIPTION) {
+            telegram.sendMessage(chatId, "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.", TelegramClient.removeKeyboard());
+            return;
+        }
+        try {
+            JsonNode root = stateStore.mapper().readTree(message.webAppData().data());
+            String type = root.path("type").asText();
+            if (!"subscription".equals(type)) {
+                throw new IllegalArgumentException("Ожидался payload subscription");
+            }
+            String taskId = root.path("taskId").asText();
+            TaskDefinition task = findTask(taskId);
+            if (task == null) throw new IllegalArgumentException("Дело не найдено");
+            Subscription updated;
+            if ("daily".equals(root.path("mode").asText())) {
+                List<String> times = new ArrayList<>();
+                for (JsonNode item : root.path("times")) times.add(parseTime(item.asText()).format(TIME_FMT));
+                if (times.isEmpty()) throw new IllegalArgumentException("Нужно хотя бы одно время");
+                updated = buildDailySubscription(profile, task, times);
+            } else {
+                LocalDate date = LocalDate.parse(root.path("date").asText());
+                LocalTime time = parseTime(root.path("time").asText());
+                updated = buildDatedSubscription(profile, task, date, time);
+            }
+            synchronized (this) {
+                replaceSubscription(updated);
+                state.sessions().remove(chatId);
+                saveState();
+            }
+            if (session.helperMessageId() != null) {
+                telegram.deleteMessage(chatId, session.helperMessageId());
+            }
+            if (message.messageId() != null) {
+                telegram.deleteMessage(chatId, message.messageId());
+            }
+            telegram.sendMessage(chatId, subscriptionSummary(updated, task), TelegramClient.removeKeyboard());
+        } catch (Exception e) {
+            telegram.sendMessage(chatId, "Не смог сохранить настройку из Mini App: " + e.getMessage(), TelegramClient.removeKeyboard());
+        }
+    }
+
+    private void handleNewTaskTitle(UserProfile profile, String text) {
+        UserSession session = synchronizedSession(profile.chatId());
+        Map<String, String> data = session.data();
+        data.put("title", text.trim());
+        state.sessions().put(profile.chatId(), new UserSession(SessionType.NEW_TASK_KIND, data, session.helperMessageId()));
+        saveState();
+        telegram.sendMessage(profile.chatId(), "Какое правило у этого дела?", newTaskKindKeyboard());
+    }
+
+    private void handleNewKind(long chatId, String kindCode) {
+        UserSession session = synchronizedSession(chatId);
+        if (session == null || (session.type() != SessionType.NEW_TASK_KIND && session.type() != SessionType.NEW_TASK_INTERVAL)) {
+            telegram.sendMessage(chatId, "Сначала нажми /new");
+            return;
+        }
+        Map<String, String> data = session.data();
+        switch (kindCode) {
+            case "DAY" -> {
+                data.put("kind", TaskKind.RECURRING.name());
+                data.put("unit", FrequencyUnit.DAY.name());
+                state.sessions().put(chatId, new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                saveState();
+                telegram.sendMessage(chatId, "Раз в сколько дней повторять? Пришли число, например 1 или 2.");
+            }
+            case "WEEK" -> {
+                data.put("kind", TaskKind.RECURRING.name());
+                data.put("unit", FrequencyUnit.WEEK.name());
+                state.sessions().put(chatId, new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                saveState();
+                telegram.sendMessage(chatId, "Раз в сколько недель повторять? Пришли число, например 1 или 3.");
+            }
+            case "MONTH" -> {
+                data.put("kind", TaskKind.RECURRING.name());
+                data.put("unit", FrequencyUnit.MONTH.name());
+                state.sessions().put(chatId, new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                saveState();
+                telegram.sendMessage(chatId, "Раз в сколько месяцев повторять? Пришли число, например 1 или 2.");
+            }
+            case "THIS_WEEK" -> saveNewTask(chatId, data, TaskKind.ONE_TIME_THIS_WEEK, null, null, 1);
+            case "NEXT_WEEK" -> saveNewTask(chatId, data, TaskKind.ONE_TIME_NEXT_WEEK, null, null, 1);
+            case "MANUAL" -> saveNewTask(chatId, data, TaskKind.MANUAL, null, null, 0);
+            default -> telegram.sendMessage(chatId, "Неизвестный тип.");
+        }
+    }
+
+    private void handleNewTaskInterval(UserProfile profile, String text) {
+        int interval;
+        try {
+            interval = Integer.parseInt(text.trim());
+        } catch (NumberFormatException e) {
+            telegram.sendMessage(profile.chatId(), "Нужно прислать целое число. Например 1 или 3.");
+            return;
+        }
+        if (interval <= 0) {
+            telegram.sendMessage(profile.chatId(), "Число должно быть больше 0.");
+            return;
+        }
+        UserSession session = synchronizedSession(profile.chatId());
+        Map<String, String> data = session.data();
+        data.put("interval", String.valueOf(interval));
+        state.sessions().put(profile.chatId(), new UserSession(SessionType.NEW_TASK_NOTE, data, session.helperMessageId()));
+        saveState();
+        telegram.sendMessage(profile.chatId(), "Нужна короткая заметка? Пришли текст или просто - если без заметки.");
+    }
+
+    private void handleNewTaskNote(UserProfile profile, String text) {
+        UserSession session = synchronizedSession(profile.chatId());
+        Map<String, String> data = session.data();
+        String note = text.trim().equals("-") ? null : text.trim();
+        FrequencyUnit unit = FrequencyUnit.valueOf(data.get("unit"));
+        int interval = Integer.parseInt(data.get("interval"));
+        int slots = unit == FrequencyUnit.DAY ? 1 : 1;
+        saveNewTask(profile.chatId(), data, TaskKind.RECURRING, unit, note, slots, interval);
+    }
+
+    private void saveNewTask(long chatId, Map<String, String> data, TaskKind kind, FrequencyUnit unit, String note, int slots) {
+        saveNewTask(chatId, data, kind, unit, note, slots, 1);
+    }
+
+    private void saveNewTask(long chatId, Map<String, String> data, TaskKind kind, FrequencyUnit unit, String note, int slots, int interval) {
+        String title = data.get("title");
+        String id = slugify(title);
+        synchronized (this) {
+            if (findTask(id) != null) {
+                id = id + "-" + shortId().substring(0, 4);
+            }
+            TaskDefinition task = new TaskDefinition(
+                    id,
+                    title,
+                    kind,
+                    unit == null ? null : new ScheduleRule(unit, interval),
+                    slots,
+                    note
             );
-            replaceSubscription(updated);
+            catalog.tasks().add(task);
+            catalogStore.save(catalog);
+            state.sessions().remove(chatId);
             saveState();
         }
+        telegram.sendMessage(chatId,
+                "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(findTask(id)) +
+                        "\nДальше можешь открыть /tasks и настроить себе напоминание.",
+                TelegramClient.removeKeyboard());
     }
 
-    private void clearDailySelection(long chatId, String taskId) {
-        synchronized (this) {
-            state.subscriptions().removeIf(s -> s.chatId() == chatId && s.taskId().equals(taskId));
-            saveState();
+    private void startMiniAppSubscription(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Не нашёл дело.");
+            return;
         }
-        sendDailyHourPicker(chatId, findTask(taskId));
-    }
-
-    private void handleDatedSubscription(long chatId, String taskId, LocalDate date, int hour) {
-        TaskDefinition task = findTask(taskId);
+        if (task.kind() == TaskKind.MANUAL) {
+            telegram.sendMessage(chatId, "Это ручное дело без расписания. Для него нет подписки по времени.");
+            return;
+        }
         UserProfile profile = synchronizedProfile(chatId);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
-        }
-        ZoneId zone = ZoneId.of(profile.zoneId());
-        ZonedDateTime chosen = date.atTime(hour, 0).atZone(zone);
-        if (!chosen.toInstant().isAfter(Instant.now())) {
-            telegram.sendMessage(chatId, "Этот момент уже прошёл. Выбери более позднюю дату или час.");
-            return;
-        }
-
-        Subscription updated;
-        synchronized (this) {
-            Subscription existing = findUserSubscription(chatId, task.id());
-            updated = switch (task.kind()) {
-                case RECURRING -> {
-                    if (task.schedule().unit() == FrequencyUnit.WEEK) {
-                        yield new Subscription(
-                                existing == null ? shortId() : existing.id(),
-                                task.id(),
-                                chatId,
-                                List.of(LocalTime.of(hour, 0).format(TIME_SHORT)),
-                                date.getDayOfWeek().name(),
-                                null,
-                                profile.zoneId(),
-                                chosen.toInstant(),
-                                true,
-                                false
-                        );
-                    }
-                    yield new Subscription(
-                            existing == null ? shortId() : existing.id(),
-                            task.id(),
-                            chatId,
-                            List.of(LocalTime.of(hour, 0).format(TIME_SHORT)),
-                            null,
-                            date.getDayOfMonth(),
-                            profile.zoneId(),
-                            chosen.toInstant(),
-                            true,
-                            false
-                    );
-                }
-                case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> new Subscription(
-                        existing == null ? shortId() : existing.id(),
-                        task.id(),
-                        chatId,
-                        List.of(LocalTime.of(hour, 0).format(TIME_SHORT)),
-                        date.getDayOfWeek().name(),
-                        date.getDayOfMonth(),
-                        profile.zoneId(),
-                        chosen.toInstant(),
-                        true,
-                        false
-                );
-                case MANUAL -> throw new IllegalArgumentException("manual");
-            };
-            replaceSubscription(updated);
-            saveState();
-        }
-        telegram.sendMessage(chatId, "Готово.\n" + subscriptionCard(updated, task));
+        String url = miniAppUrl(task, profile.zoneId());
+        Map<String, Object> keyboard = TelegramClient.keyboard(List.of(
+                List.of(TelegramClient.webAppKeyboardButton("Открыть планировщик", url)),
+                List.of(Map.of("text", "/cancel"))
+        ), true, true);
+        Integer msgId = telegram.sendMessage(chatId,
+                "Открой планировщик ниже. Внутри выбери дату и время, затем нажми «Сохранить».\n\n" +
+                        "Для ежедневных дел можно добавить несколько времён сразу.",
+                keyboard,
+                false);
+        state.sessions().put(chatId, new UserSession(SessionType.WAITING_WEBAPP_SUBSCRIPTION,
+                Map.of("taskId", task.id()), msgId));
+        saveState();
     }
 
-    private void sendCalendar(long chatId, String taskId, YearMonth month) {
-        TaskDefinition task = findTask(taskId);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
+    private String miniAppUrl(TaskDefinition task, String zoneId) {
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("taskId", task.id());
+        params.put("title", task.title());
+        params.put("kind", task.kind().name());
+        params.put("zone", zoneId);
+        if (task.schedule() != null) {
+            params.put("unit", task.schedule().unit().name());
+            params.put("interval", String.valueOf(task.schedule().interval()));
         }
-        ZoneId zone = ZoneId.of(userZone(chatId));
-        LocalDate today = ZonedDateTime.now(zone).toLocalDate();
-        YearMonth normalized = normalizeCalendarMonth(task, month, today);
-        String text = switch (task.kind()) {
-            case RECURRING -> task.schedule().unit() == FrequencyUnit.WEEK
-                    ? "Выбери первую дату. Дальше бот будет напоминать в этот же день недели."
-                    : "Выбери дату. Дальше бот будет напоминать в это же число каждого цикла.";
-            case ONE_TIME_THIS_WEEK -> "Выбери дату на этой неделе.";
-            case ONE_TIME_NEXT_WEEK -> "Выбери дату на следующей неделе.";
-            case MANUAL -> "";
+        return appBaseUrl + "/miniapp?" + params.entrySet().stream()
+                .map(e -> TelegramClient.encode(e.getKey()) + "=" + TelegramClient.encode(e.getValue()))
+                .collect(Collectors.joining("&"));
+    }
+
+    private Subscription buildDailySubscription(UserProfile profile, TaskDefinition task, List<String> times) {
+        ZoneId zone = ZoneId.of(profile.zoneId());
+        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        List<String> normalized = times.stream().map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+        Instant next = computeNextDaily(normalized, task.schedule().interval(), zone, Instant.now());
+        return new Subscription(
+                existing == null ? shortId() : existing.id(),
+                task.id(),
+                profile.chatId(),
+                normalized,
+                null,
+                null,
+                profile.zoneId(),
+                next,
+                true,
+                false
+        );
+    }
+
+    private Subscription buildDatedSubscription(UserProfile profile, TaskDefinition task, LocalDate date, LocalTime time) {
+        ZoneId zone = ZoneId.of(profile.zoneId());
+        ZonedDateTime chosen = ZonedDateTime.of(date, time, zone);
+        if (!chosen.toInstant().isAfter(Instant.now())) {
+            throw new IllegalArgumentException("Этот момент уже прошёл");
+        }
+        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        return switch (task.kind()) {
+            case RECURRING -> {
+                if (task.schedule().unit() == FrequencyUnit.WEEK) {
+                    yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                            List.of(time.format(TIME_FMT)), date.getDayOfWeek().name(), null, profile.zoneId(), chosen.toInstant(), true, false);
+                } else if (task.schedule().unit() == FrequencyUnit.MONTH) {
+                    yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                            List.of(time.format(TIME_FMT)), null, date.getDayOfMonth(), profile.zoneId(), chosen.toInstant(), true, false);
+                } else {
+                    yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true, false);
+                }
+            }
+            case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                    List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true, false);
+            case MANUAL -> throw new IllegalArgumentException("Для ручного дела нельзя задать дату");
         };
-        telegram.sendMessage(chatId, text + "\n\n" + monthTitle(normalized), calendarKeyboard(task, normalized, today), false);
     }
 
     private void sendTasksPage(long chatId, int page) {
         List<TaskDefinition> tasks = catalog.tasks();
         if (tasks.isEmpty()) {
-            telegram.sendMessage(chatId, "Каталог пуст. Залей JSON через /import.");
+            telegram.sendMessage(chatId, "Каталог пуст. Пришли файл через /import или создай дело через /new.");
             return;
         }
-        int pageSize = 5;
-        int totalPages = (tasks.size() + pageSize - 1) / pageSize;
+        int pageSize = 6;
+        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
         int safePage = Math.max(0, Math.min(page, totalPages - 1));
         int from = safePage * pageSize;
         int to = Math.min(tasks.size(), from + pageSize);
-
-        StringBuilder sb = new StringBuilder("Выбери дело — страница ")
-                .append(safePage + 1)
-                .append("/")
-                .append(totalPages)
-                .append("\n\n");
+        StringBuilder sb = new StringBuilder("Дела — страница ").append(safePage + 1).append("/").append(totalPages).append("\n\n");
         for (int i = from; i < to; i++) {
-            TaskDefinition task = tasks.get(i);
-            sb.append(i + 1)
-                    .append(". ")
-                    .append(task.title())
-                    .append("\n   ")
-                    .append(frequencyText(task))
-                    .append("\n\n");
+            sb.append(i + 1).append(". ").append(tasks.get(i).title()).append("\n   ")
+                    .append(frequencyText(tasks.get(i))).append("\n\n");
         }
-        sb.append("Можно открыть карточку или сразу нажать «Настроить».");
+        sb.append("Нажми на дело, чтобы открыть карточку и настроить себе напоминание.");
 
-        List<List<Map<String, String>>> rows = new ArrayList<>();
+        List<List<Map<String, Object>>> rows = new ArrayList<>();
         for (int i = from; i < to; i++) {
-            int number = i + 1;
-            rows.add(List.of(
-                    TelegramClient.button(number + ". " + trimTitle(tasks.get(i).title()), "TASK_SHOW:" + number),
-                    TelegramClient.button("🗓 Настроить", tasks.get(i).kind() == TaskKind.MANUAL ? "MANUAL:" + number : "TASK_CFG:" + number)
-            ));
+            rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(tasks.get(i).title()), "TASK_SHOW:" + (i + 1))));
         }
-        List<Map<String, String>> nav = new ArrayList<>();
+        List<Map<String, Object>> nav = new ArrayList<>();
         if (safePage > 0) nav.add(TelegramClient.button("◀️", "TASK_PAGE:" + (safePage - 1)));
         if (safePage < totalPages - 1) nav.add(TelegramClient.button("▶️", "TASK_PAGE:" + (safePage + 1)));
         if (!nav.isEmpty()) rows.add(nav);
-
-        telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows), false);
+        telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
     }
+
+    private void showTaskCard(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+            return;
+        }
+        long subscribers = state.subscriptions().stream().filter(s -> s.taskId().equals(task.id()) && s.active()).count();
+        Subscription own = findUserSubscription(chatId, task.id());
+        String text = """
+%s
+
+Номер: %d
+Как повторяется: %s
+Тип: %s
+Подписчиков: %d
+%s
+%s
+""".formatted(
+                task.title(),
+                taskNumber(task.id()),
+                frequencyText(task),
+                humanTaskKind(task.kind()),
+                subscribers,
+                task.note() == null || task.note().isBlank() ? "" : ("Заметка: " + task.note()),
+                own == null ? "У тебя пока нет своей настройки." : ("Твоя настройка: " + humanSchedule(own, task))
+        );
+        List<List<Map<String, Object>>> rows = new ArrayList<>();
+        if (task.kind() != TaskKind.MANUAL) {
+            rows.add(List.of(TelegramClient.button(own == null ? "🗓 Настроить через Mini App" : "🗓 Изменить настройку", "SUB_START:" + taskNumber(task.id()))));
+            if (own != null) rows.add(List.of(TelegramClient.button("Удалить мою настройку", "UNSUB:" + taskNumber(task.id()))));
+        }
+        rows.add(List.of(TelegramClient.button("Кто подписан", "WHO:" + taskNumber(task.id()))));
+        telegram.sendMessage(chatId, text.strip(), TelegramClient.inlineKeyboard(rows));
+    }
+
     private void handleWho(long chatId, String ref) {
         TaskDefinition task = resolveTask(ref);
         if (task == null) {
             telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
             return;
         }
-        List<Subscription> subscriptions = state.subscriptions().stream()
+        List<Subscription> subs = state.subscriptions().stream()
                 .filter(s -> s.taskId().equals(task.id()) && s.active())
                 .toList();
-        if (subscriptions.isEmpty()) {
+        if (subs.isEmpty()) {
             telegram.sendMessage(chatId, "На это дело пока никто не подписан.");
             return;
         }
-        String body = subscriptions.stream()
-                .map(this::subscriberLine)
-                .collect(Collectors.joining("\n\n"));
+        String body = subs.stream().map(s -> "• " + displayUser(s.chatId()) + " — " + humanSchedule(s, task)).collect(Collectors.joining("\n\n"));
         telegram.sendMessage(chatId, "Кто подписан на «" + task.title() + "»:\n\n" + body);
     }
 
@@ -681,30 +651,6 @@ public class BotService {
         }
     }
 
-    private void handleCatalogImport(UserProfile profile, String text) {
-        try {
-            Catalog imported = catalogStore.mapper().readValue(text, Catalog.class);
-            synchronized (this) {
-                catalogStore.save(imported);
-                this.catalog = imported;
-                state.sessions().remove(profile.chatId());
-                saveState();
-            }
-            telegram.sendMessage(profile.chatId(), "Каталог обновлён. Дел: " + imported.tasks().size());
-        } catch (Exception e) {
-            telegram.sendMessage(profile.chatId(), "Не смог разобрать JSON: " + e.getMessage());
-        }
-    }
-
-    private void handleManualPing(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
-        }
-        telegram.sendMessage(chatId, "⏰ Ручной пинг: " + task.title(), promptKeyboard("manual-" + shortId()), false);
-    }
-
     private void handlePromptDone(String callbackId, String promptId, long chatId, Integer messageId) {
         synchronized (this) {
             ActivePrompt prompt = findPrompt(promptId);
@@ -721,9 +667,7 @@ public class BotService {
             saveState();
         }
         telegram.answerCallbackQuery(callbackId, "Отмечено как сделано");
-        if (messageId != null) {
-            telegram.editMessageReplyMarkup(chatId, messageId, TelegramClient.inlineKeyboard(List.of()));
-        }
+        if (messageId != null) telegram.editMessageReplyMarkup(chatId, messageId, TelegramClient.inlineKeyboard(List.of()));
     }
 
     private void handlePromptSnooze(String callbackId, String promptId, int hours, long chatId) {
@@ -733,16 +677,8 @@ public class BotService {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            replacePrompt(new ActivePrompt(
-                    prompt.id(),
-                    prompt.subscriptionId(),
-                    prompt.taskId(),
-                    prompt.chatId(),
-                    prompt.scheduledFor(),
-                    Instant.now().plus(Duration.ofHours(hours)),
-                    STATE_SNOOZED,
-                    prompt.messageId()
-            ));
+            replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
+                    Instant.now().plus(Duration.ofHours(hours)), STATE_SNOOZED, prompt.messageId()));
             saveState();
         }
         telegram.answerCallbackQuery(callbackId, "Отложено на " + hours + " ч");
@@ -756,413 +692,101 @@ public class BotService {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            replacePrompt(new ActivePrompt(
-                    prompt.id(),
-                    prompt.subscriptionId(),
-                    prompt.taskId(),
-                    prompt.chatId(),
-                    prompt.scheduledFor(),
-                    Instant.now().plus(Duration.ofMinutes(minutes)),
-                    STATE_IN_PROGRESS,
-                    prompt.messageId()
-            ));
+            replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
+                    Instant.now().plus(Duration.ofMinutes(minutes)), STATE_IN_PROGRESS, prompt.messageId()));
             saveState();
         }
-        telegram.answerCallbackQuery(callbackId, "Ок");
-        telegram.sendMessage(chatId, "Хорошо, перепроверю через " + minutesLabel(minutes) + ".");
+        telegram.answerCallbackQuery(callbackId, "Хорошо");
+        telegram.sendMessage(chatId, "Ок, перепроверю через " + minutesLabel(minutes) + ".");
     }
 
     private void sendSnoozeHoursPicker(long chatId, String promptId) {
-        List<List<Map<String, String>>> rows = List.of(
-                List.of(
-                        TelegramClient.button("1 ч", "PROMPT_SN:" + promptId + ":1"),
-                        TelegramClient.button("2 ч", "PROMPT_SN:" + promptId + ":2"),
-                        TelegramClient.button("3 ч", "PROMPT_SN:" + promptId + ":3")
-                ),
-                List.of(
-                        TelegramClient.button("6 ч", "PROMPT_SN:" + promptId + ":6"),
-                        TelegramClient.button("12 ч", "PROMPT_SN:" + promptId + ":12"),
-                        TelegramClient.button("24 ч", "PROMPT_SN:" + promptId + ":24")
-                )
+        List<List<Map<String, Object>>> rows = List.of(
+                List.of(TelegramClient.button("1 ч", "PROMPT_SN:" + promptId + ":1"), TelegramClient.button("2 ч", "PROMPT_SN:" + promptId + ":2"), TelegramClient.button("3 ч", "PROMPT_SN:" + promptId + ":3")),
+                List.of(TelegramClient.button("6 ч", "PROMPT_SN:" + promptId + ":6"), TelegramClient.button("12 ч", "PROMPT_SN:" + promptId + ":12"), TelegramClient.button("24 ч", "PROMPT_SN:" + promptId + ":24"))
         );
-        telegram.sendMessage(chatId, "На сколько часов отложить?", TelegramClient.inlineKeyboard(rows), false);
+        telegram.sendMessage(chatId, "На сколько часов отложить?", TelegramClient.inlineKeyboard(rows));
     }
 
     private void sendGoDoingPicker(long chatId, String promptId) {
-        List<List<Map<String, String>>> rows = List.of(
-                List.of(
-                        TelegramClient.button("15 мин", "PROMPT_GOSET:" + promptId + ":15"),
-                        TelegramClient.button("30 мин", "PROMPT_GOSET:" + promptId + ":30")
-                ),
-                List.of(
-                        TelegramClient.button("1 час", "PROMPT_GOSET:" + promptId + ":60"),
-                        TelegramClient.button("2 часа", "PROMPT_GOSET:" + promptId + ":120")
-                )
+        List<List<Map<String, Object>>> rows = List.of(
+                List.of(TelegramClient.button("15 мин", "PROMPT_GOSET:" + promptId + ":15"), TelegramClient.button("30 мин", "PROMPT_GOSET:" + promptId + ":30")),
+                List.of(TelegramClient.button("1 час", "PROMPT_GOSET:" + promptId + ":60"), TelegramClient.button("2 часа", "PROMPT_GOSET:" + promptId + ":120"))
         );
-        telegram.sendMessage(chatId, "Через сколько перепроверить, всё ли получилось?", TelegramClient.inlineKeyboard(rows), false);
+        telegram.sendMessage(chatId, "Через сколько перепроверить, всё ли получилось?", TelegramClient.inlineKeyboard(rows));
     }
 
     private void sendPrompt(ActivePrompt prompt, TaskDefinition task, PromptReason reason) {
-        String body = switch (reason) {
-            case FIRST_PING -> "⏰ Пора заняться делом";
-            case REMINDER_AGAIN -> "⏰ Напоминаю ещё раз";
+        String header = switch (reason) {
+            case FIRST -> "⏰ Пора заняться делом";
+            case REPEAT -> "⏰ Напоминаю ещё раз";
             case SNOOZE_FINISHED -> "⏰ Время после откладывания вышло";
             case CHECK_AFTER_WORK -> "👀 Проверяю: получилось сделать?";
         };
-        String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId()))).format(DATE_TIME_SHORT);
-        Integer messageId = telegram.sendMessage(prompt.chatId(), body + "\n\n" + task.title() + "\nПлан: " + when, promptKeyboard(prompt.id()), false);
+        String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId()))).format(DATE_TIME_FMT);
+        Integer messageId = telegram.sendMessage(prompt.chatId(), header + "\n\n" + task.title() + "\nПлан: " + when, promptKeyboard(prompt.id()));
         if (messageId != null) {
             synchronized (this) {
-                ActivePrompt current = findPrompt(prompt.id());
-                if (current != null) {
-                    replacePrompt(new ActivePrompt(
-                            current.id(),
-                            current.subscriptionId(),
-                            current.taskId(),
-                            current.chatId(),
-                            current.scheduledFor(),
-                            current.nextPingAt(),
-                            current.state(),
-                            messageId
-                    ));
-                    saveState();
-                }
+                replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), prompt.nextPingAt(), prompt.state(), messageId));
+                saveState();
             }
         }
     }
 
     private Map<String, Object> promptKeyboard(String promptId) {
         return TelegramClient.inlineKeyboard(List.of(
-                List.of(
-                        TelegramClient.button("Сделал", "PROMPT_DONE:" + promptId),
-                        TelegramClient.button("Пошёл делать", "PROMPT_GO:" + promptId)
-                ),
-                List.of(
-                        TelegramClient.button("+1 ч", "PROMPT_SN:" + promptId + ":1"),
-                        TelegramClient.button("+3 ч", "PROMPT_SN:" + promptId + ":3"),
-                        TelegramClient.button("Отложить…", "PROMPT_MORE:" + promptId)
-                )
+                List.of(TelegramClient.button("✅ Сделал", "PROMPT_DONE:" + promptId), TelegramClient.button("🏃 Пошёл делать", "PROMPT_GO:" + promptId)),
+                List.of(TelegramClient.button("⏳ Отложить", "PROMPT_MORE:" + promptId))
         ));
     }
 
-    private String subscriptionsText(long chatId) {
-        List<Subscription> subscriptions = state.subscriptions().stream()
-                .filter(s -> s.chatId() == chatId && s.active())
-                .sorted(Comparator.comparing(Subscription::taskId))
-                .toList();
-        if (subscriptions.isEmpty()) {
-            return "У тебя пока нет настроенных дел. Открой /tasks и выбери нужное.";
+    private Subscription advanceSubscription(Subscription sub, TaskDefinition task, Instant previousScheduledFor) {
+        if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
+            return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), sub.nextRunAt(), sub.active(), true);
         }
-        return subscriptions.stream()
-                .map(s -> subscriptionCard(s, findTask(s.taskId())))
-                .collect(Collectors.joining("\n\n", "Твои настройки:\n\n", ""));
-    }
-
-    private String subscriptionCard(Subscription sub, TaskDefinition task) {
-        String next = sub.nextRunAt() == null ? "—" : ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_SHORT);
-        return """
-                • %s
-                %s
-                Таймзона: %s
-                Ближайший пинг: %s
-                """.formatted(
-                task == null ? "Удалённое дело" : task.title(),
-                scheduleHuman(sub, task),
-                sub.zoneId(),
-                next
-        );
-    }
-
-    private String subscriberLine(Subscription sub) {
-        UserProfile user = state.users().get(sub.chatId());
-        String who = user == null
-                ? "Пользователь"
-                : (user.username() != null && !user.username().isBlank() ? "@" + user.username() : user.firstName());
-        TaskDefinition task = findTask(sub.taskId());
-        return who + "\n" + scheduleHuman(sub, task) + "\nТаймзона: " + sub.zoneId();
-    }
-
-    private String scheduleHuman(Subscription sub, TaskDefinition task) {
-        if (task == null) {
-            return "—";
+        if (task.kind() == TaskKind.MANUAL) {
+            return sub;
         }
-        return switch (task.kind()) {
-            case RECURRING -> switch (task.schedule().unit()) {
-                case DAY -> "каждые " + intervalWord(task.schedule().interval(), "день", "дня", "дней") + " в " + String.join(", ", sub.dailyTimes());
-                case WEEK -> "раз в " + intervalWord(task.schedule().interval(), "неделю", "недели", "недель") + ", по " + dowRu(sub.dayOfWeek()) + " в " + onlyTime(sub);
-                case MONTH -> "раз в " + intervalWord(task.schedule().interval(), "месяц", "месяца", "месяцев") + ", " + sub.dayOfMonth() + " числа в " + onlyTime(sub);
-            };
-            case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> "один раз: " + ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_SHORT);
-            case MANUAL -> "ручной запуск";
-        };
-    }
-
-    private String frequencyText(TaskDefinition task) {
-        if (task.kind() == TaskKind.MANUAL) return "ручной запуск";
-        if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK) return "один раз на этой неделе";
-        if (task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) return "один раз на следующей неделе";
-        return switch (task.schedule().unit()) {
-            case DAY -> task.schedule().interval() == 1 ? "каждый день" : "каждые " + task.schedule().interval() + " дня";
-            case WEEK -> "раз в " + intervalWord(task.schedule().interval(), "неделю", "недели", "недель");
-            case MONTH -> "раз в " + intervalWord(task.schedule().interval(), "месяц", "месяца", "месяцев");
-        };
-    }
-
-    private String taskKindText(TaskKind kind) {
-        return switch (kind) {
-            case RECURRING -> "регулярное";
-            case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> "разовое";
-            case MANUAL -> "ручное";
-        };
-    }
-
-    private String startText() {
-        return """
-                Это бот-напоминалка по домашним делам.
-
-                Самый простой сценарий:
-                1) Нажми «Список дел»
-                2) Выбери нужное дело
-                3) Нажми «🗓 Настроить»
-                4) Если дело ежедневное — выбери часы кнопками
-                5) Если еженедельное или ежемесячное — сначала выбери дату на календаре, потом час
-
-                Когда придёт пинг, ты сможешь нажать:
-                • Сделал
-                • Пошёл делать
-                • Отложить
-
-                Если не ответишь, бот перепингует через 5 минут.
-                """;
-    }
-
-    private String helpText() {
-        return """
-                Что умеет бот
-                • показывает список дел без технических ID
-                • позволяет настраивать напоминания кнопками
-                • для недельных и месячных дел даёт выбрать день на календаре, потом час
-                • для ежедневных дел позволяет выбрать один или несколько часов
-                • если не ответить на пинг, бот напоминает снова через 5 минут
-                • есть кнопка «Пошёл делать», после которой бот перепроверит позже
-
-                Основные команды
-                /tasks — список дел
-                /task <номер> — карточка дела
-                /subs — мои настройки
-                /who <номер> — кто подписан на дело
-                /tz — моя таймзона
-                /tzset <таймзона> — сменить таймзону вручную
-                /ping <номер> — ручной пинг для ручных дел
-                /reload — перечитать catalog.json
-                /import — следующим сообщением прислать новый JSON каталога
-
-                Но вводить команды вручную почти не нужно:
-                основной путь — через кнопки в /tasks.
-                """;
-    }
-
-    private Map<String, Object> startKeyboard() {
-        return TelegramClient.inlineKeyboard(List.of(
-                List.of(TelegramClient.button("Список дел", "TASK_PAGE:0")),
-                List.of(TelegramClient.button("Мои настройки", "SUBS"), TelegramClient.button("Таймзона", "TZ_MENU"))
-        ));
-    }
-
-    private String timezoneText(long chatId) {
-        return "Твоя таймзона: " + userZone(chatId) + "\nМожно выбрать из кнопок ниже или ввести вручную: /tzset Asia/Almaty";
-    }
-
-    private Map<String, Object> timezoneKeyboard() {
-        return TelegramClient.inlineKeyboard(List.of(
-                List.of(
-                        TelegramClient.button("Asia/Almaty", "TZ:Asia/Almaty"),
-                        TelegramClient.button("Europe/Moscow", "TZ:Europe/Moscow")
-                ),
-                List.of(
-                        TelegramClient.button("Europe/Vilnius", "TZ:Europe/Vilnius"),
-                        TelegramClient.button("Europe/Berlin", "TZ:Europe/Berlin")
-                ),
-                List.of(TelegramClient.button("UTC", "TZ:UTC"))
-        ));
-    }
-
-    private Map<String, Object> hourKeyboard(long chatId, String taskId, LocalDate date, boolean mergeForDaily) {
-        ZoneId zone = ZoneId.of(userZone(chatId));
-        LocalDate today = ZonedDateTime.now(zone).toLocalDate();
-        int currentHour = ZonedDateTime.now(zone).getHour();
-        List<List<Map<String, String>>> rows = new ArrayList<>();
-        List<Map<String, String>> row = new ArrayList<>();
-        for (int hour = 0; hour < 24; hour++) {
-            boolean allowed = true;
-            if (date != null && date.equals(today)) {
-                allowed = hour > currentHour;
-            }
-            String callback = allowed
-                    ? (mergeForDaily
-                    ? "SUB_DAILY_HOUR:" + taskId + ":" + hour
-                    : "DATE_HOUR:" + taskId + ":" + date.format(DateTimeFormatter.BASIC_ISO_DATE) + ":" + hour)
-                    : "noop";
-            row.add(TelegramClient.button(String.format("%02d:00", hour), callback));
-            if (row.size() == 4) {
-                rows.add(new ArrayList<>(row));
-                row.clear();
-            }
-        }
-        if (!row.isEmpty()) {
-            rows.add(row);
-        }
-        if (mergeForDaily) {
-            rows.add(List.of(
-                    TelegramClient.button("Очистить всё", "SUB_DAILY_CLEAR:" + taskId),
-                    TelegramClient.button("Готово", "SUB_DAILY_DONE:" + taskId)
-            ));
-        } else if (date != null) {
-            rows.add(List.of(TelegramClient.button("← Назад к календарю", "CALNAV:" + taskId + ":" + YearMonth.from(date).format(DateTimeFormatter.ofPattern("yyyyMM")))));
-        }
-        return TelegramClient.inlineKeyboard(rows);
-    }
-
-    private Map<String, Object> calendarKeyboard(TaskDefinition task, YearMonth ym, LocalDate today) {
-        List<List<Map<String, String>>> rows = new ArrayList<>();
-        rows.add(List.of(
-                TelegramClient.button("Пн", "noop"),
-                TelegramClient.button("Вт", "noop"),
-                TelegramClient.button("Ср", "noop"),
-                TelegramClient.button("Чт", "noop"),
-                TelegramClient.button("Пт", "noop"),
-                TelegramClient.button("Сб", "noop"),
-                TelegramClient.button("Вс", "noop")
-        ));
-
-        LocalDate first = ym.atDay(1);
-        int shift = first.getDayOfWeek().getValue() - 1;
-        List<Map<String, String>> week = new ArrayList<>();
-        for (int i = 0; i < shift; i++) {
-            week.add(TelegramClient.button(" ", "noop"));
-        }
-        for (int day = 1; day <= ym.lengthOfMonth(); day++) {
-            LocalDate date = ym.atDay(day);
-            boolean allowed = isDateAllowed(task, date, today);
-            week.add(TelegramClient.button(String.valueOf(day), allowed
-                    ? "DATE_PICK:" + task.id() + ":" + date.format(DateTimeFormatter.BASIC_ISO_DATE)
-                    : "noop"));
-            if (week.size() == 7) {
-                rows.add(new ArrayList<>(week));
-                week.clear();
-            }
-        }
-        while (!week.isEmpty() && week.size() < 7) {
-            week.add(TelegramClient.button(" ", "noop"));
-        }
-        if (!week.isEmpty()) {
-            rows.add(week);
-        }
-
-        YearMonth prev = ym.minusMonths(1);
-        YearMonth next = ym.plusMonths(1);
-        rows.add(List.of(
-                TelegramClient.button("◀️", "CALNAV:" + task.id() + ":" + prev.format(DateTimeFormatter.ofPattern("yyyyMM"))),
-                TelegramClient.button("▶️", "CALNAV:" + task.id() + ":" + next.format(DateTimeFormatter.ofPattern("yyyyMM")))
-        ));
-
-        return TelegramClient.inlineKeyboard(rows);
-    }
-
-    private boolean isDateAllowed(TaskDefinition task, LocalDate date, LocalDate today) {
-        if (date.isBefore(today)) {
-            return false;
-        }
-        return switch (task.kind()) {
-            case RECURRING -> true;
-            case ONE_TIME_THIS_WEEK -> sameIsoWeek(today, date);
-            case ONE_TIME_NEXT_WEEK -> sameIsoWeek(today.plusWeeks(1), date);
-            case MANUAL -> false;
-        };
-    }
-
-    private boolean sameIsoWeek(LocalDate a, LocalDate b) {
-        LocalDate aMon = a.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
-        LocalDate bMon = b.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
-        return aMon.equals(bMon);
-    }
-
-    private YearMonth normalizeCalendarMonth(TaskDefinition task, YearMonth requested, LocalDate today) {
-        if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK) {
-            return YearMonth.from(today);
-        }
-        if (task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
-            return YearMonth.from(today.plusWeeks(1));
-        }
-        return requested;
-    }
-
-    private String monthTitle(YearMonth ym) {
-        return ym.getMonth().getDisplayName(TextStyle.FULL_STANDALONE, new Locale("ru")) + " " + ym.getYear();
-    }
-
-    private Subscription advanceSubscription(Subscription sub, TaskDefinition task, Instant basedOn) {
         ZoneId zone = ZoneId.of(sub.zoneId());
-        Instant next = switch (task.kind()) {
-            case RECURRING -> switch (task.schedule().unit()) {
-                case DAY -> computeNextDailyAfter(sub.dailyTimes(), task.schedule().interval(), zone, basedOn);
-                case WEEK -> computeNextWeeklyAfter(onlyTime(sub), task.schedule().interval(), zone, basedOn);
-                case MONTH -> computeNextMonthlyAfter(sub.dayOfMonth(), onlyTime(sub), task.schedule().interval(), zone, basedOn);
-            };
-            case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> null;
-            case MANUAL -> null;
+        Instant next = switch (task.schedule().unit()) {
+            case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, previousScheduledFor.plusSeconds(1));
+            case WEEK -> ZonedDateTime.ofInstant(previousScheduledFor, zone).plusWeeks(task.schedule().interval()).toInstant();
+            case MONTH -> nextMonthly(previousScheduledFor, zone, task.schedule().interval(), sub.dayOfMonth(), parseTime(sub.dailyTimes().getFirst()));
         };
-        boolean done = task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK;
-        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, !done, done);
+        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
     }
 
-    private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant nowInstant) {
-        ZonedDateTime now = ZonedDateTime.ofInstant(nowInstant, zone);
-        List<LocalTime> parsed = times.stream().map(t -> LocalTime.parse(t, TIME_SHORT)).sorted().toList();
-        for (LocalTime t : parsed) {
-            ZonedDateTime candidate = now.toLocalDate().atTime(t).atZone(zone);
-            if (candidate.isAfter(now)) {
-                return candidate.toInstant();
+    private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant base) {
+        if (times == null || times.isEmpty()) throw new IllegalArgumentException("Для ежедневного дела нужен хотя бы один момент времени");
+        List<LocalTime> localTimes = times.stream().map(this::parseTime).sorted().toList();
+        ZonedDateTime now = ZonedDateTime.ofInstant(base, zone);
+        for (int addDays = 0; addDays <= 370; addDays++) {
+            LocalDate date = now.toLocalDate().plusDays(addDays);
+            long diff = Duration.between(now.toLocalDate().atStartOfDay(zone).toInstant(), date.atStartOfDay(zone).toInstant()).toDays();
+            if (diff % intervalDays != 0) continue;
+            for (LocalTime lt : localTimes) {
+                ZonedDateTime candidate = ZonedDateTime.of(date, lt, zone);
+                if (candidate.toInstant().isAfter(base)) return candidate.toInstant();
             }
         }
-        return now.toLocalDate().plusDays(intervalDays).atTime(parsed.get(0)).atZone(zone).toInstant();
+        throw new IllegalStateException("Не смог посчитать nextRunAt для ежедневного дела");
     }
 
-    private Instant computeNextDailyAfter(List<String> times, int intervalDays, ZoneId zone, Instant basedOn) {
-        ZonedDateTime base = ZonedDateTime.ofInstant(basedOn, zone);
-        List<LocalTime> parsed = times.stream().map(t -> LocalTime.parse(t, TIME_SHORT)).sorted().toList();
-        LocalDate date = base.toLocalDate();
-        LocalTime time = base.toLocalTime().withSecond(0).withNano(0);
-        for (LocalTime t : parsed) {
-            if (t.isAfter(time)) {
-                return date.atTime(t).atZone(zone).toInstant();
-            }
-        }
-        return date.plusDays(intervalDays).atTime(parsed.get(0)).atZone(zone).toInstant();
-    }
-
-    private Instant computeNextWeeklyAfter(String time, int intervalWeeks, ZoneId zone, Instant basedOn) {
-        ZonedDateTime base = ZonedDateTime.ofInstant(basedOn, zone);
-        return base.plusWeeks(intervalWeeks).with(LocalTime.parse(time, TIME_SHORT)).toInstant();
-    }
-
-    private Instant computeNextMonthlyAfter(int dayOfMonth, String time, int intervalMonths, ZoneId zone, Instant basedOn) {
-        ZonedDateTime base = ZonedDateTime.ofInstant(basedOn, zone);
-        YearMonth ym = YearMonth.from(base.toLocalDate().plusMonths(intervalMonths));
-        int actualDay = Math.min(dayOfMonth, ym.lengthOfMonth());
-        return ZonedDateTime.of(LocalDate.of(ym.getYear(), ym.getMonth(), actualDay), LocalTime.parse(time, TIME_SHORT), zone).toInstant();
+    private Instant nextMonthly(Instant previous, ZoneId zone, int interval, Integer desiredDay, LocalTime time) {
+        ZonedDateTime moved = ZonedDateTime.ofInstant(previous, zone).plusMonths(interval);
+        int day = Math.min(desiredDay == null ? moved.getDayOfMonth() : desiredDay, moved.toLocalDate().lengthOfMonth());
+        return ZonedDateTime.of(LocalDate.of(moved.getYear(), moved.getMonth(), day), time, zone).toInstant();
     }
 
     private UserProfile registerUser(TelegramClient.Message message) {
         long chatId = message.chat().id();
-        String username = message.from() == null ? null : message.from().username();
-        String firstName = message.from() == null ? "User" : message.from().firstName();
+        String username = message.from() != null ? message.from().username() : null;
+        String firstName = message.from() != null && message.from().firstName() != null ? message.from().firstName() : "User";
         synchronized (this) {
             UserProfile existing = state.users().get(chatId);
-            String zone = existing == null || existing.zoneId() == null || existing.zoneId().isBlank()
-                    ? defaultZone.getId()
-                    : existing.zoneId();
-            UserProfile profile = new UserProfile(chatId, username, firstName, zone);
+            UserProfile profile = existing != null
+                    ? new UserProfile(chatId, username, firstName, existing.zoneId())
+                    : new UserProfile(chatId, username, firstName, defaultZone.getId());
             state.users().put(chatId, profile);
             saveState();
             return profile;
@@ -1170,131 +794,264 @@ public class BotService {
     }
 
     private UserProfile synchronizedProfile(long chatId) {
-        synchronized (this) {
-            UserProfile p = state.users().get(chatId);
-            return p == null ? new UserProfile(chatId, null, "User", defaultZone.getId()) : p;
+        UserProfile profile = state.users().get(chatId);
+        if (profile == null) {
+            profile = new UserProfile(chatId, null, "User", defaultZone.getId());
+            state.users().put(chatId, profile);
         }
+        return profile;
     }
 
-    private String userZone(long chatId) {
-        UserProfile p = state.users().get(chatId);
-        return p == null || p.zoneId() == null || p.zoneId().isBlank() ? defaultZone.getId() : p.zoneId();
+    private UserSession synchronizedSession(long chatId) {
+        return state.sessions().get(chatId);
     }
 
-    private TaskDefinition resolveTask(String ref) {
-        String trimmed = ref.trim();
-        if (trimmed.matches("\\d+")) {
-            int idx = Integer.parseInt(trimmed) - 1;
-            if (idx >= 0 && idx < catalog.tasks().size()) {
-                return catalog.tasks().get(idx);
-            }
+    private void clearSession(long chatId) {
+        UserSession session = state.sessions().remove(chatId);
+        if (session != null && session.helperMessageId() != null) {
+            telegram.deleteMessage(chatId, session.helperMessageId());
         }
-        return catalog.tasks().stream()
-                .filter(t -> t.id().equalsIgnoreCase(trimmed))
-                .findFirst()
-                .orElse(null);
-    }
-
-    private TaskDefinition findTask(String id) {
-        return catalog.tasks().stream().filter(t -> t.id().equals(id)).findFirst().orElse(null);
+        saveState();
     }
 
     private Subscription findUserSubscription(long chatId, String taskId) {
-        return state.subscriptions().stream()
-                .filter(s -> s.chatId() == chatId && s.taskId().equals(taskId))
-                .findFirst()
-                .orElse(null);
+        return state.subscriptions().stream().filter(s -> s.chatId() == chatId && s.taskId().equals(taskId) && s.active()).findFirst().orElse(null);
     }
 
     private Subscription findSubscription(String id) {
         return state.subscriptions().stream().filter(s -> s.id().equals(id)).findFirst().orElse(null);
     }
 
-    private ActivePrompt findPrompt(String promptId) {
-        return state.prompts().stream().filter(p -> p.id().equals(promptId)).findFirst().orElse(null);
+    private ActivePrompt findPrompt(String id) {
+        return state.prompts().stream().filter(p -> p.id().equals(id)).findFirst().orElse(null);
     }
 
-    private int taskNumber(String id) {
+    private TaskDefinition findTask(String id) {
+        return catalog.tasks().stream().filter(t -> t.id().equals(id)).findFirst().orElse(null);
+    }
+
+    private TaskDefinition resolveTask(String ref) {
+        if (ref == null || ref.isBlank()) return null;
+        String value = ref.trim();
+        if (value.chars().allMatch(Character::isDigit)) {
+            int idx = Integer.parseInt(value) - 1;
+            return idx >= 0 && idx < catalog.tasks().size() ? catalog.tasks().get(idx) : null;
+        }
+        return findTask(value);
+    }
+
+    private int taskNumber(String taskId) {
         for (int i = 0; i < catalog.tasks().size(); i++) {
-            if (catalog.tasks().get(i).id().equals(id)) {
-                return i + 1;
-            }
+            if (catalog.tasks().get(i).id().equals(taskId)) return i + 1;
         }
         return -1;
     }
 
-    private void replaceSubscription(Subscription sub) {
-        state.subscriptions().removeIf(s -> s.id().equals(sub.id()) || (s.chatId() == sub.chatId() && s.taskId().equals(sub.taskId())));
-        state.subscriptions().add(sub);
+    private String frequencyText(TaskDefinition task) {
+        if (task == null) return "—";
+        return switch (task.kind()) {
+            case MANUAL -> "по кнопке, без расписания";
+            case ONE_TIME_THIS_WEEK -> "один раз на этой неделе";
+            case ONE_TIME_NEXT_WEEK -> "один раз на следующей неделе";
+            case RECURRING -> switch (task.schedule().unit()) {
+                case DAY -> "каждые " + task.schedule().interval() + " дн.";
+                case WEEK -> "каждые " + task.schedule().interval() + " нед.";
+                case MONTH -> "каждые " + task.schedule().interval() + " мес.";
+            };
+        };
     }
 
-    private void replacePrompt(ActivePrompt prompt) {
-        state.prompts().removeIf(p -> p.id().equals(prompt.id()));
-        state.prompts().add(prompt);
+    private String humanTaskKind(TaskKind kind) {
+        return switch (kind) {
+            case RECURRING -> "🔁 регулярное";
+            case ONE_TIME_THIS_WEEK -> "🗓 разовое на этой неделе";
+            case ONE_TIME_NEXT_WEEK -> "🗓 разовое на следующей неделе";
+            case MANUAL -> "🖐 ручное";
+        };
+    }
+
+    private String humanSchedule(Subscription sub, TaskDefinition task) {
+        ZoneId zone = ZoneId.of(sub.zoneId());
+        return switch (task.kind()) {
+            case MANUAL -> "без времени";
+            case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> "один раз: " + ZonedDateTime.ofInstant(sub.nextRunAt(), zone).format(DATE_TIME_FMT);
+            case RECURRING -> switch (task.schedule().unit()) {
+                case DAY -> "каждые " + task.schedule().interval() + " дн. в " + String.join(", ", sub.dailyTimes()) + " (" + sub.zoneId() + ")";
+                case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + dayRu(sub.dayOfWeek()) + " в " + sub.dailyTimes().getFirst() + " (" + sub.zoneId() + ")";
+                case MONTH -> "каждые " + task.schedule().interval() + " мес. " + sub.dayOfMonth() + " числа в " + sub.dailyTimes().getFirst() + " (" + sub.zoneId() + ")";
+            };
+        };
+    }
+
+    private String subscriptionsText(long chatId) {
+        List<Subscription> own = state.subscriptions().stream().filter(s -> s.chatId() == chatId && s.active()).toList();
+        if (own.isEmpty()) return "У тебя пока нет настроек. Открой /tasks и выбери дело.";
+        StringBuilder sb = new StringBuilder("Твои настройки:\n\n");
+        int i = 1;
+        for (Subscription sub : own) {
+            TaskDefinition task = findTask(sub.taskId());
+            sb.append(i++).append(". ").append(task == null ? sub.taskId() : task.title()).append("\n")
+                    .append("   ").append(task == null ? "" : humanSchedule(sub, task)).append("\n");
+            if (sub.nextRunAt() != null) {
+                sb.append("   Ближайший пинг: ").append(ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT)).append("\n");
+            }
+            sb.append("\n");
+        }
+        return sb.toString().strip();
+    }
+
+    private String subscriptionSummary(Subscription sub, TaskDefinition task) {
+        return "✅ Настройка сохранена\n\n" + task.title() + "\n" + humanSchedule(sub, task) +
+                "\nБлижайший пинг: " + ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT);
+    }
+
+    private String timezoneText(long chatId) {
+        return "Твоя текущая таймзона: " + synchronizedProfile(chatId).zoneId() + "\nМожно выбрать кнопкой ниже или прислать /tzset Europe/Berlin";
+    }
+
+    private Map<String, Object> timezoneKeyboard() {
+        return TelegramClient.inlineKeyboard(List.of(
+                List.of(TelegramClient.button("Asia/Almaty", "TZ:Asia/Almaty"), TelegramClient.button("Europe/Moscow", "TZ:Europe/Moscow")),
+                List.of(TelegramClient.button("Europe/Vilnius", "TZ:Europe/Vilnius"), TelegramClient.button("Europe/Berlin", "TZ:Europe/Berlin"))
+        ));
+    }
+
+    private Map<String, Object> startKeyboard() {
+        return TelegramClient.inlineKeyboard(List.of(
+                List.of(TelegramClient.button("Список дел", "TASK_PAGE:0"), TelegramClient.button("Таймзона", "TZ_MENU"))
+        ));
+    }
+
+    private Map<String, Object> newTaskKindKeyboard() {
+        return TelegramClient.inlineKeyboard(List.of(
+                List.of(TelegramClient.button("Каждый N день", "NEW_KIND:DAY"), TelegramClient.button("Каждую N неделю", "NEW_KIND:WEEK")),
+                List.of(TelegramClient.button("Каждый N месяц", "NEW_KIND:MONTH")),
+                List.of(TelegramClient.button("Разово на этой неделе", "NEW_KIND:THIS_WEEK"), TelegramClient.button("Разово на следующей", "NEW_KIND:NEXT_WEEK")),
+                List.of(TelegramClient.button("Ручное дело", "NEW_KIND:MANUAL"))
+        ));
+    }
+
+    private void replaceSubscription(Subscription updated) {
+        state.subscriptions().removeIf(s -> s.chatId() == updated.chatId() && s.taskId().equals(updated.taskId()));
+        state.subscriptions().add(updated);
+    }
+
+    private void replacePrompt(ActivePrompt updated) {
+        state.prompts().removeIf(p -> p.id().equals(updated.id()));
+        state.prompts().add(updated);
     }
 
     private void saveState() {
         stateStore.save(state);
     }
 
-    private String onlyTime(Subscription sub) {
-        return sub.dailyTimes().isEmpty() ? "—" : sub.dailyTimes().get(0);
+    private String startText() {
+        return """
+Привет. Я бот-напоминалка по делам.
+
+Что умею:
+• показывать список дел
+• импортировать каталог JSON-файлом
+• добавлять новые дела прямо в чате через /new
+• настраивать дату и время через Mini App
+• напоминать и перепингивать, если ты не ответил
+
+Команды:
+/tasks — каталог дел
+/subs — мои настройки
+/new — добавить новое дело через диалог
+/import — импорт каталога JSON-файлом
+/tz — таймзона
+/cancel — отменить текущий сценарий
+/help — подробная справка
+""";
     }
 
-    private String currentSubscriptionShort(long chatId, String taskId) {
-        Subscription sub = findUserSubscription(chatId, taskId);
-        TaskDefinition task = findTask(taskId);
-        return sub == null ? "—" : subscriptionCard(sub, task);
+    private String helpText() {
+        return """
+Как пользоваться:
+
+1) /tasks
+Открой каталог дел и выбери нужное дело.
+
+2) В карточке дела нажми «Настроить через Mini App».
+Для ежедневных дел можно выбрать несколько времён.
+Для недельных, месячных и разовых дел выбираются дата и точное время.
+
+3) Когда я напомню, можно нажать:
+• Сделал
+• Пошёл делать
+• Отложить
+
+Если ты не нажал кнопку, я перепингую через 5 минут.
+
+Импорт файлом:
+• Нажми /import
+• Отправь .json документом
+• В файле должен быть объект с полем tasks
+
+Создание нового дела:
+• Нажми /new
+• Ответь на вопросы в чате
+""";
     }
 
-    private String intervalWord(int n, String one, String twoToFour, String many) {
-        if (n == 1) {
-            return one;
-        }
-        int mod10 = n % 10;
-        int mod100 = n % 100;
-        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-            return n + " " + twoToFour;
-        }
-        return n + " " + many;
+    private String userZone(long chatId) {
+        return synchronizedProfile(chatId).zoneId();
     }
 
-    private String dowRu(String english) {
-        if (english == null) return "день";
-        return switch (english) {
-            case "MONDAY" -> "понедельникам";
-            case "TUESDAY" -> "вторникам";
-            case "WEDNESDAY" -> "средам";
-            case "THURSDAY" -> "четвергам";
-            case "FRIDAY" -> "пятницам";
-            case "SATURDAY" -> "субботам";
-            case "SUNDAY" -> "воскресеньям";
-            default -> english;
-        };
-    }
-
-    private String minutesLabel(int minutes) {
-        if (minutes % 60 == 0) {
-            int hours = minutes / 60;
-            return hours == 1 ? "1 час" : hours + " ч";
-        }
-        return minutes + " мин";
+    private String displayUser(long chatId) {
+        UserProfile user = synchronizedProfile(chatId);
+        if (user.username() != null && !user.username().isBlank()) return "@" + user.username();
+        return user.firstName() + " (" + chatId + ")";
     }
 
     private String trimTitle(String title) {
-        return title.length() <= 28 ? title : title.substring(0, 25) + "…";
+        return title.length() <= 28 ? title : title.substring(0, 25) + "...";
+    }
+
+    private LocalTime parseTime(String raw) {
+        List<DateTimeFormatter> formatters = List.of(
+                DateTimeFormatter.ofPattern("H:mm"),
+                DateTimeFormatter.ofPattern("HH:mm"),
+                DateTimeFormatter.ofPattern("H:mm:ss"),
+                DateTimeFormatter.ofPattern("HH:mm:ss")
+        );
+        for (DateTimeFormatter formatter : formatters) {
+            try {
+                return LocalTime.parse(raw.trim(), formatter).withSecond(0).withNano(0);
+            } catch (Exception ignored) {
+            }
+        }
+        throw new IllegalArgumentException("Неверный формат времени: " + raw);
+    }
+
+    private String slugify(String text) {
+        String slug = text.toLowerCase(Locale.ROOT)
+                .replaceAll("[а-яё]", "")
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-|-$)", "");
+        return slug.isBlank() ? "task-" + shortId().substring(0, 6) : slug;
     }
 
     private String shortId() {
         return UUID.randomUUID().toString().substring(0, 8);
     }
 
-    private record DueAction(ActivePrompt prompt, TaskDefinition task, PromptReason reason) {}
-
-    private enum PromptReason {
-        FIRST_PING,
-        REMINDER_AGAIN,
-        SNOOZE_FINISHED,
-        CHECK_AFTER_WORK
+    private String dayRu(String day) {
+        try {
+            return DayOfWeek.valueOf(day).getDisplayName(TextStyle.FULL, Locale.forLanguageTag("ru"));
+        } catch (Exception e) {
+            return day;
+        }
     }
+
+    private String minutesLabel(int minutes) {
+        if (minutes == 60) return "1 час";
+        if (minutes < 60) return minutes + " мин";
+        return (minutes / 60) + " ч";
+    }
+
+    private record DueAction(ActivePrompt prompt, TaskDefinition task, PromptReason reason) {}
+    private enum PromptReason { FIRST, REPEAT, SNOOZE_FINISHED, CHECK_AFTER_WORK }
 }
