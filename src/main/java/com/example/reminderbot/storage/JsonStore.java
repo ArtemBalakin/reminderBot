@@ -9,7 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
-public class JsonStore<T> {
+public class JsonStore<T> implements Store<T> {
     private final Path path;
     private final Class<T> type;
     private final T empty;

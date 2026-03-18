@@ -1,7 +1,7 @@
 package com.example.reminderbot.service;
 
 import com.example.reminderbot.model.*;
-import com.example.reminderbot.storage.JsonStore;
+import com.example.reminderbot.storage.Store;
 import com.example.reminderbot.telegram.TelegramClient;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -26,8 +26,8 @@ public class BotService {
     private static final String STATE_CHECK_WAITING = "CHECK_WAITING";
 
     private final TelegramClient telegram;
-    private final JsonStore<BotState> stateStore;
-    private final JsonStore<Catalog> catalogStore;
+    private final Store<BotState> stateStore;
+    private final Store<Catalog> catalogStore;
     private final ZoneId defaultZone;
     private final String appBaseUrl;
 
@@ -35,8 +35,8 @@ public class BotService {
     private Catalog catalog;
 
     public BotService(TelegramClient telegram,
-                      JsonStore<BotState> stateStore,
-                      JsonStore<Catalog> catalogStore,
+                      Store<BotState> stateStore,
+                      Store<Catalog> catalogStore,
                       ZoneId defaultZone,
                       String appBaseUrl) {
         this.telegram = telegram;
@@ -806,13 +806,27 @@ public class BotService {
         if (task.kind() == TaskKind.MANUAL) {
             return sub;
         }
+        Instant now = Instant.now();
+        Instant cursor = previousScheduledFor;
+        Instant next = computeImmediateNext(sub, task, cursor);
+        int guard = 0;
+        while (!next.isAfter(now)) {
+            cursor = next;
+            next = computeImmediateNext(sub, task, cursor);
+            if (++guard > 2000) {
+                throw new IllegalStateException("Не смог пересчитать следующий слот без догоняния");
+            }
+        }
+        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
+    }
+
+    private Instant computeImmediateNext(Subscription sub, TaskDefinition task, Instant previousScheduledFor) {
         ZoneId zone = ZoneId.of(sub.zoneId());
-        Instant next = switch (task.schedule().unit()) {
+        return switch (task.schedule().unit()) {
             case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, previousScheduledFor.plusSeconds(1));
             case WEEK -> ZonedDateTime.ofInstant(previousScheduledFor, zone).plusWeeks(task.schedule().interval()).toInstant();
             case MONTH -> nextMonthly(previousScheduledFor, zone, task.schedule().interval(), sub.dayOfMonth(), parseTime(sub.dailyTimes().getFirst()));
         };
-        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
     }
 
     private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant base) {
