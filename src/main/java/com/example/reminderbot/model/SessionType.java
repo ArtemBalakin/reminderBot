@@ -2,6 +2,7 @@ package com.example.reminderbot.model;
 
 public enum SessionType {
     IMPORT_CATALOG_FILE,
+    IMPORT_DB_FILE,
     NEW_TASK_TITLE,
     NEW_TASK_KIND,
     NEW_TASK_INTERVAL,

@@ -25,6 +25,7 @@ public class JsonStore<T> implements Store<T> {
                 .enable(SerializationFeature.INDENT_OUTPUT);
     }
 
+    @Override
     public synchronized T load() {
         try {
             if (Files.notExists(path)) {
@@ -38,6 +39,7 @@ public class JsonStore<T> implements Store<T> {
         }
     }
 
+    @Override
     public synchronized void save(T value) {
         try {
             Files.createDirectories(path.getParent());
@@ -49,6 +51,7 @@ public class JsonStore<T> implements Store<T> {
         }
     }
 
+    @Override
     public ObjectMapper mapper() {
         return mapper;
     }

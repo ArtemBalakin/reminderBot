@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +74,41 @@ public class TelegramClient {
             return response.result().messageId();
         } catch (Exception e) {
             System.err.println("sendMessage exception: " + e.getMessage());
+            return null;
+        }
+    }
+
+    public Integer sendDocument(long chatId, String filename, byte[] content, String caption) {
+        try {
+            String boundary = "----ReminderBot" + System.currentTimeMillis();
+            List<byte[]> parts = new ArrayList<>();
+            parts.add(("--" + boundary + "\r\n" +
+                    "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" +
+                    chatId + "\r\n").getBytes(StandardCharsets.UTF_8));
+            if (caption != null && !caption.isBlank()) {
+                parts.add(("--" + boundary + "\r\n" +
+                        "Content-Disposition: form-data; name=\"caption\"\r\n\r\n" +
+                        caption + "\r\n").getBytes(StandardCharsets.UTF_8));
+            }
+            parts.add(("--" + boundary + "\r\n" +
+                    "Content-Disposition: form-data; name=\"document\"; filename=\"" + filename + "\"\r\n" +
+                    "Content-Type: application/json\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            parts.add(content);
+            parts.add("\r\n".getBytes(StandardCharsets.UTF_8));
+            parts.add(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "sendDocument"))
+                    .timeout(Duration.ofSeconds(70))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .POST(HttpRequest.BodyPublishers.ofByteArrays(parts))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Message.class);
+            ApiResponse<Message> parsed = mapper.readValue(response.body(), type);
+            return parsed.ok() && parsed.result() != null ? parsed.result().messageId() : null;
+        } catch (Exception e) {
+            System.err.println("sendDocument exception: " + e.getMessage());
             return null;
         }
     }

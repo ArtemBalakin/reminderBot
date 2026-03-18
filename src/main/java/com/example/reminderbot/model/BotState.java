@@ -10,6 +10,7 @@ public record BotState(
         List<Subscription> subscriptions,
         List<ActivePrompt> prompts,
         Map<Long, UserSession> sessions,
+        List<CompletionRecord> completions,
         long lastUpdateId
 ) {
     public BotState {
@@ -17,9 +18,10 @@ public record BotState(
         subscriptions = subscriptions == null ? new ArrayList<>() : new ArrayList<>(subscriptions);
         prompts = prompts == null ? new ArrayList<>() : new ArrayList<>(prompts);
         sessions = sessions == null ? new HashMap<>() : new HashMap<>(sessions);
+        completions = completions == null ? new ArrayList<>() : new ArrayList<>(completions);
     }
 
     public static BotState empty() {
-        return new BotState(new HashMap<>(), new ArrayList<>(), new ArrayList<>(), new HashMap<>(), 0L);
+        return new BotState(new HashMap<>(), new ArrayList<>(), new ArrayList<>(), new HashMap<>(), new ArrayList<>(), 0L);
     }
 }

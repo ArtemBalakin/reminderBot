@@ -19,7 +19,10 @@ public class BotService {
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
     private static final Duration IGNORE_REPING_DELAY = Duration.ofMinutes(5);
     private static final Duration GOING_DOING_CHECK_DELAY = Duration.ofMinutes(30);
-    private static final Duration IGNORE_ALERT_DELAY = Duration.ofMinutes(30);
+    private static final Duration IGNORE_ALERT_DELAY = Duration.ofHours(3);
+    private static final LocalTime TOMORROW_REMINDER_TIME = LocalTime.of(23, 0);
+    private static final Duration TOMORROW_REMINDER_WINDOW = Duration.ofMinutes(5);
+    private static final int DEFAULT_REPING_MINUTES = 5;
     private static final String STATE_START_WAITING = "START_WAITING";
     private static final String STATE_SNOOZED = "SNOOZED";
     private static final String STATE_GOING_DOING_DELAY = "GOING_DOING_DELAY";
@@ -53,7 +56,7 @@ public class BotService {
     }
 
     public synchronized void setLastUpdateId(long updateId) {
-        state = new BotState(state.users(), state.subscriptions(), state.prompts(), state.sessions(), updateId);
+        state = new BotState(state.users(), state.subscriptions(), state.prompts(), state.sessions(), state.completions(), updateId);
         saveState();
     }
 
@@ -70,6 +73,7 @@ public class BotService {
     public void processDueItems() {
         List<DueAction> actions = new ArrayList<>();
         List<AlertAction> alerts = new ArrayList<>();
+        List<TomorrowReminderAction> tomorrowReminders = new ArrayList<>();
         synchronized (this) {
             Instant now = Instant.now();
             Set<String> blockedSubs = state.prompts().stream().map(ActivePrompt::subscriptionId).collect(Collectors.toSet());
@@ -84,7 +88,7 @@ public class BotService {
                 TaskDefinition task = findTask(sub.taskId());
                 if (task == null) continue;
                 ActivePrompt prompt = new ActivePrompt(
-                        shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(), now.plus(IGNORE_REPING_DELAY),
+                        shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(), now.plus(userRepingDelay(sub.chatId())),
                         STATE_START_WAITING, null, 0, false, now, false
                 );
                 state.prompts().add(prompt);
@@ -114,7 +118,7 @@ public class BotService {
 
                 if (STATE_SNOOZED.equals(prompt.state())) {
                     ActivePrompt updated = new ActivePrompt(
-                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(userRepingDelay(prompt.chatId())),
                             STATE_START_WAITING, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), now, false
                     );
                     state.prompts().set(i, updated);
@@ -124,7 +128,7 @@ public class BotService {
 
                 if (STATE_GOING_DOING_DELAY.equals(prompt.state())) {
                     ActivePrompt updated = new ActivePrompt(
-                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(userRepingDelay(prompt.chatId())),
                             STATE_CHECK_WAITING, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), now, false
                     );
                     state.prompts().set(i, updated);
@@ -139,7 +143,7 @@ public class BotService {
                 Instant stageStartedAt = prompt.stageStartedAt() == null ? now : prompt.stageStartedAt();
                 boolean shouldBroadcast = !prompt.currentStageAlertSent() && !Duration.between(stageStartedAt, now).minus(IGNORE_ALERT_DELAY).isNegative();
                 ActivePrompt updated = new ActivePrompt(
-                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(userRepingDelay(prompt.chatId())),
                         prompt.state(), prompt.messageId(), prompt.alertBroadcastCount() + (shouldBroadcast ? 1 : 0),
                         prompt.endOfDayAlertSent(), stageStartedAt, prompt.currentStageAlertSent() || shouldBroadcast
                 );
@@ -149,6 +153,8 @@ public class BotService {
                     alerts.add(new AlertAction(updated, task, isStartStage ? AlertReason.START_IGNORED : AlertReason.CHECK_IGNORED));
                 }
             }
+            cleanupOldCompletions(now);
+            collectTomorrowReminders(now, tomorrowReminders);
             saveState();
         }
 
@@ -157,6 +163,9 @@ public class BotService {
         }
         for (AlertAction alert : alerts) {
             sendGlobalAlert(alert.prompt(), alert.task(), alert.reason());
+        }
+        for (TomorrowReminderAction reminder : tomorrowReminders) {
+            telegram.sendMessage(reminder.chatId(), reminder.text());
         }
     }
 
@@ -170,9 +179,15 @@ public class BotService {
         }
 
         UserSession session = synchronizedSession(chatId);
-        if (session != null && session.type() == SessionType.IMPORT_CATALOG_FILE && message.document() != null) {
-            handleImportFile(profile, message.document());
-            return;
+        if (session != null && message.document() != null) {
+            if (session.type() == SessionType.IMPORT_CATALOG_FILE) {
+                handleImportFile(profile, message.document());
+                return;
+            }
+            if (session.type() == SessionType.IMPORT_DB_FILE) {
+                handleImportDbFile(profile, message.document());
+                return;
+            }
         }
 
         String text = message.text() == null ? "" : message.text().trim();
@@ -225,6 +240,10 @@ public class BotService {
             telegram.sendMessage(chatId, subscriptionsText(chatId));
             return;
         }
+        if (text.equals("/today")) {
+            telegram.sendMessage(chatId, todayBoardText());
+            return;
+        }
         if (text.startsWith("/who ")) {
             handleWho(chatId, text.substring(5).trim());
             return;
@@ -266,8 +285,16 @@ public class BotService {
             return;
         }
         if (text.equals("/reload")) {
-            synchronized (this) { this.catalog = catalogStore.load(); }
-            telegram.sendMessage(chatId, "Каталог перечитан. Дел: " + catalog.tasks().size());
+            synchronized (this) { this.catalog = catalogStore.load(); this.state = stateStore.load(); }
+            telegram.sendMessage(chatId, "Данные перечитаны. Дел: " + catalog.tasks().size());
+            return;
+        }
+        if (text.startsWith("/reping ")) {
+            handleRepingSet(chatId, text.substring(8).trim());
+            return;
+        }
+        if (text.equals("/reping")) {
+            telegram.sendMessage(chatId, repingText(chatId));
             return;
         }
 
@@ -696,7 +723,7 @@ public class BotService {
             ZoneId zone = ZoneId.of(zoneText.trim());
             synchronized (this) {
                 UserProfile old = synchronizedProfile(chatId);
-                state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), zone.getId(), old.alertsEnabled()));
+                state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), zone.getId(), old.alertsEnabled(), normalizeRepingMinutes(old.repingMinutes()), old.lastTomorrowReminderForDate()));
                 saveState();
             }
             telegram.sendMessage(chatId, "Таймзона обновлена: " + zone.getId());
@@ -729,8 +756,9 @@ public class BotService {
             Subscription sub = findSubscription(prompt.subscriptionId());
             TaskDefinition task = findTask(prompt.taskId());
             state.prompts().removeIf(p -> p.id().equals(promptId));
+            state.completions().add(new CompletionRecord(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), Instant.now()));
             if (sub != null && task != null) {
-                replaceSubscription(advanceSubscription(sub, task, prompt.scheduledFor()));
+                replaceSubscription(advanceSubscription(sub, task, prompt.scheduledFor(), Instant.now()));
             }
             saveState();
         }
@@ -765,7 +793,7 @@ public class BotService {
             saveState();
         }
         telegram.answerCallbackQuery(callbackId, "Хорошо");
-        telegram.sendMessage(chatId, "Ок, считаю, что ты пошёл делать. Через 30 минут спрошу, сделал ли ты. Если потом молчать — буду перепингивать каждые 5 минут.");
+        telegram.sendMessage(chatId, "Ок, считаю, что ты пошёл делать. Через 30 минут спрошу, сделал ли ты. Если потом молчать — буду перепингивать с твоим интервалом /reping.");
     }
 
     private void sendSnoozeHoursPicker(long chatId, String promptId) {
@@ -799,34 +827,21 @@ public class BotService {
         ));
     }
 
-    private Subscription advanceSubscription(Subscription sub, TaskDefinition task, Instant previousScheduledFor) {
+    private Subscription advanceSubscription(Subscription sub, TaskDefinition task, Instant previousScheduledFor, Instant now) {
         if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
             return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), sub.nextRunAt(), sub.active(), true);
         }
         if (task.kind() == TaskKind.MANUAL) {
             return sub;
         }
-        Instant now = Instant.now();
-        Instant cursor = previousScheduledFor;
-        Instant next = computeImmediateNext(sub, task, cursor);
-        int guard = 0;
-        while (!next.isAfter(now)) {
-            cursor = next;
-            next = computeImmediateNext(sub, task, cursor);
-            if (++guard > 2000) {
-                throw new IllegalStateException("Не смог пересчитать следующий слот без догоняния");
-            }
-        }
-        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
-    }
-
-    private Instant computeImmediateNext(Subscription sub, TaskDefinition task, Instant previousScheduledFor) {
         ZoneId zone = ZoneId.of(sub.zoneId());
-        return switch (task.schedule().unit()) {
-            case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, previousScheduledFor.plusSeconds(1));
-            case WEEK -> ZonedDateTime.ofInstant(previousScheduledFor, zone).plusWeeks(task.schedule().interval()).toInstant();
-            case MONTH -> nextMonthly(previousScheduledFor, zone, task.schedule().interval(), sub.dayOfMonth(), parseTime(sub.dailyTimes().getFirst()));
+        Instant base = previousScheduledFor.isAfter(now) ? previousScheduledFor.plusSeconds(1) : now;
+        Instant next = switch (task.schedule().unit()) {
+            case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, base);
+            case WEEK -> computeNextWeekly(sub, task, zone, base);
+            case MONTH -> computeNextMonthly(sub, task, zone, base);
         };
+        return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
     }
 
     private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant base) {
@@ -845,10 +860,27 @@ public class BotService {
         throw new IllegalStateException("Не смог посчитать nextRunAt для ежедневного дела");
     }
 
-    private Instant nextMonthly(Instant previous, ZoneId zone, int interval, Integer desiredDay, LocalTime time) {
-        ZonedDateTime moved = ZonedDateTime.ofInstant(previous, zone).plusMonths(interval);
-        int day = Math.min(desiredDay == null ? moved.getDayOfMonth() : desiredDay, moved.toLocalDate().lengthOfMonth());
-        return ZonedDateTime.of(LocalDate.of(moved.getYear(), moved.getMonth(), day), time, zone).toInstant();
+    private Instant computeNextWeekly(Subscription sub, TaskDefinition task, ZoneId zone, Instant base) {
+        LocalTime time = parseTime(sub.dailyTimes().getFirst());
+        DayOfWeek targetDay = DayOfWeek.valueOf(sub.dayOfWeek());
+        ZonedDateTime baseZdt = ZonedDateTime.ofInstant(base, zone);
+        ZonedDateTime firstCandidate = baseZdt.with(TemporalAdjusters.nextOrSame(targetDay)).with(time);
+        if (!firstCandidate.toInstant().isAfter(base)) {
+            firstCandidate = firstCandidate.plusWeeks(task.schedule().interval());
+        }
+        return firstCandidate.toInstant();
+    }
+
+    private Instant computeNextMonthly(Subscription sub, TaskDefinition task, ZoneId zone, Instant base) {
+        LocalTime time = parseTime(sub.dailyTimes().getFirst());
+        ZonedDateTime baseZdt = ZonedDateTime.ofInstant(base, zone);
+        int desiredDay = sub.dayOfMonth() == null ? baseZdt.getDayOfMonth() : sub.dayOfMonth();
+        ZonedDateTime candidate = baseZdt.withDayOfMonth(Math.min(desiredDay, baseZdt.toLocalDate().lengthOfMonth())).with(time);
+        if (!candidate.toInstant().isAfter(base)) {
+            candidate = candidate.plusMonths(task.schedule().interval());
+        }
+        int actualDay = Math.min(desiredDay, candidate.toLocalDate().lengthOfMonth());
+        return ZonedDateTime.of(LocalDate.of(candidate.getYear(), candidate.getMonth(), actualDay), time, zone).toInstant();
     }
 
     private UserProfile registerUser(TelegramClient.Message message) {
@@ -858,8 +890,8 @@ public class BotService {
         synchronized (this) {
             UserProfile existing = state.users().get(chatId);
             UserProfile profile = existing != null
-                    ? new UserProfile(chatId, username, firstName, existing.zoneId(), existing.alertsEnabled())
-                    : new UserProfile(chatId, username, firstName, defaultZone.getId(), true);
+                    ? new UserProfile(chatId, username, firstName, existing.zoneId(), existing.alertsEnabled(), normalizeRepingMinutes(existing.repingMinutes()), existing.lastTomorrowReminderForDate())
+                    : new UserProfile(chatId, username, firstName, defaultZone.getId(), true, DEFAULT_REPING_MINUTES, null);
             state.users().put(chatId, profile);
             saveState();
             return profile;
@@ -869,7 +901,7 @@ public class BotService {
     private UserProfile synchronizedProfile(long chatId) {
         UserProfile profile = state.users().get(chatId);
         if (profile == null) {
-            profile = new UserProfile(chatId, null, "User", defaultZone.getId(), true);
+            profile = new UserProfile(chatId, null, "User", defaultZone.getId(), true, DEFAULT_REPING_MINUTES, null);
             state.users().put(chatId, profile);
         }
         return profile;
@@ -981,7 +1013,7 @@ public class BotService {
     private void setAlertsEnabled(long chatId, boolean enabled) {
         synchronized (this) {
             UserProfile old = synchronizedProfile(chatId);
-            state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(), enabled));
+            state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(), enabled, normalizeRepingMinutes(old.repingMinutes()), old.lastTomorrowReminderForDate()));
             saveState();
         }
     }
@@ -1006,13 +1038,13 @@ public class BotService {
                 : (owner.username() != null && !owner.username().isBlank() ? "@" + owner.username() : owner.firstName());
         String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId()))).format(DATE_TIME_FMT);
         String header = switch (reason) {
-            case START_IGNORED -> "🚨 Алерт: игнорирует начало дела уже 30 минут";
+            case START_IGNORED -> "🚨 Алерт: игнорирует начало дела уже 3 часа";
             case CHECK_IGNORED -> "🚨 Алерт: не подтвердил завершение после кнопки «Пошёл делать»";
             case END_OF_DAY -> "🚨 Алерт: день закончился, а дело не закрыто";
         };
         String details = switch (reason) {
-            case START_IGNORED -> "Человек не отреагировал на стартовый пинг. Бот уже перепингивает каждые 5 минут.";
-            case CHECK_IGNORED -> "Человек нажал «Пошёл делать», но потом 30 минут игнорирует проверку «Сделал?». Бот уже перепингивает каждые 5 минут.";
+            case START_IGNORED -> "Человек не отреагировал на стартовый пинг. Бот уже перепингивает с заданным интервалом.";
+            case CHECK_IGNORED -> "Человек нажал «Пошёл делать», но потом 3 часа игнорирует проверку «Сделал?». Бот уже перепингивает с заданным интервалом.";
             case END_OF_DAY -> "Сегодня это дело должно было быть закрыто, но подтверждения так и не было.";
         };
         String text = header + "\n\n" +
@@ -1054,6 +1086,186 @@ public class BotService {
         ));
     }
 
+    private void handleImportDbFile(UserProfile profile, TelegramClient.Document document) {
+        try {
+            String filePath = telegram.getFilePath(document.fileId());
+            byte[] bytes = telegram.downloadFile(filePath);
+            JsonNode root = stateStore.mapper().readTree(new String(bytes, StandardCharsets.UTF_8));
+            synchronized (this) {
+                if (root.has("catalog") || root.has("state")) {
+                    DatabaseExport exported = stateStore.mapper().treeToValue(root, DatabaseExport.class);
+                    if (exported.catalog() != null) {
+                        this.catalog = exported.catalog();
+                        catalogStore.save(this.catalog);
+                    }
+                    if (exported.state() != null) {
+                        this.state = exported.state();
+                        state.sessions().remove(profile.chatId());
+                        stateStore.save(this.state);
+                    }
+                } else if (root.has("tasks")) {
+                    this.catalog = stateStore.mapper().treeToValue(root, Catalog.class);
+                    catalogStore.save(this.catalog);
+                } else if (root.has("users") || root.has("subscriptions") || root.has("prompts")) {
+                    this.state = stateStore.mapper().treeToValue(root, BotState.class);
+                    state.sessions().remove(profile.chatId());
+                    stateStore.save(this.state);
+                } else {
+                    throw new IllegalArgumentException("Не понял структуру файла");
+                }
+                state.sessions().remove(profile.chatId());
+                saveState();
+            }
+            telegram.sendMessage(profile.chatId(), "Импорт в БД выполнен. Дел: " + catalog.tasks().size() + ", подписок: " + state.subscriptions().size(), TelegramClient.removeKeyboard());
+        } catch (Exception e) {
+            telegram.sendMessage(profile.chatId(), "Не смог импортировать файл в БД: " + e.getMessage());
+        }
+    }
+
+    private void exportDb(long chatId) {
+        try {
+            DatabaseExport exported;
+            synchronized (this) {
+                exported = new DatabaseExport(catalog, state);
+            }
+            byte[] bytes = stateStore.mapper().writeValueAsBytes(exported);
+            telegram.sendDocument(chatId, "reminderbot-export-" + LocalDate.now() + ".json", bytes, "Экспорт данных бота");
+        } catch (Exception e) {
+            telegram.sendMessage(chatId, "Не смог сделать экспорт: " + e.getMessage());
+        }
+    }
+
+    private void handleRepingSet(long chatId, String raw) {
+        int minutes;
+        try {
+            minutes = Integer.parseInt(raw);
+        } catch (NumberFormatException e) {
+            telegram.sendMessage(chatId, "Нужно целое число минут. Например: /reping 10");
+            return;
+        }
+        if (minutes < 1 || minutes > 180) {
+            telegram.sendMessage(chatId, "Допустимо от 1 до 180 минут.");
+            return;
+        }
+        synchronized (this) {
+            UserProfile old = synchronizedProfile(chatId);
+            state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(), old.alertsEnabled(), minutes, old.lastTomorrowReminderForDate()));
+            saveState();
+        }
+        telegram.sendMessage(chatId, "Ок, теперь перепинг каждые " + minutes + " мин.");
+    }
+
+    private String repingText(long chatId) {
+        return "Твой интервал перепинга: " + normalizeRepingMinutes(synchronizedProfile(chatId).repingMinutes()) + " мин.\nИзменить: /reping 10";
+    }
+
+    private Duration userRepingDelay(long chatId) {
+        return Duration.ofMinutes(normalizeRepingMinutes(synchronizedProfile(chatId).repingMinutes()));
+    }
+
+    private int normalizeRepingMinutes(Integer value) {
+        if (value == null || value <= 0) return DEFAULT_REPING_MINUTES;
+        return value;
+    }
+
+    private void collectTomorrowReminders(Instant now, List<TomorrowReminderAction> out) {
+        for (UserProfile profile : new ArrayList<>(state.users().values())) {
+            ZoneId zone = ZoneId.of(profile.zoneId());
+            ZonedDateTime localNow = ZonedDateTime.ofInstant(now, zone);
+            LocalTime time = localNow.toLocalTime();
+            if (time.isBefore(TOMORROW_REMINDER_TIME) || time.isAfter(TOMORROW_REMINDER_TIME.plus(TOMORROW_REMINDER_WINDOW))) {
+                continue;
+            }
+            LocalDate tomorrow = localNow.toLocalDate().plusDays(1);
+            if (tomorrow.toString().equals(profile.lastTomorrowReminderForDate())) {
+                continue;
+            }
+            List<String> items = new ArrayList<>();
+            for (Subscription sub : state.subscriptions()) {
+                if (sub.chatId() != profile.chatId() || !sub.active() || sub.oneTimeDone() || sub.nextRunAt() == null) continue;
+                TaskDefinition task = findTask(sub.taskId());
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                LocalDate dueDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
+                if (!dueDate.equals(tomorrow)) continue;
+                String schedule = task.kind() == TaskKind.RECURRING && task.schedule() != null && task.schedule().unit() == FrequencyUnit.DAY
+                        ? String.join(", ", sub.dailyTimes())
+                        : sub.dailyTimes().isEmpty() ? "без времени" : sub.dailyTimes().getFirst();
+                items.add("• " + task.title() + " — " + schedule);
+            }
+            UserProfile updated = new UserProfile(profile.chatId(), profile.username(), profile.firstName(), profile.zoneId(), profile.alertsEnabled(), normalizeRepingMinutes(profile.repingMinutes()), tomorrow.toString());
+            state.users().put(profile.chatId(), updated);
+            if (!items.isEmpty()) {
+                String text = "📋 Завтра у тебя такие дела:\n\n" + String.join("\n", items);
+                out.add(new TomorrowReminderAction(profile.chatId(), text));
+            }
+        }
+    }
+
+    private void cleanupOldCompletions(Instant now) {
+        Instant cutoff = now.minus(Duration.ofDays(14));
+        state.completions().removeIf(c -> c.completedAt() != null && c.completedAt().isBefore(cutoff));
+    }
+
+    private String todayBoardText() {
+        Instant now = Instant.now();
+        List<String> sections = new ArrayList<>();
+        List<UserProfile> users = new ArrayList<>(state.users().values()).stream().sorted(Comparator.comparing(this::displayNameForSort)).toList();
+        for (UserProfile profile : users) {
+            ZoneId zone = ZoneId.of(profile.zoneId());
+            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+            List<String> rows = new ArrayList<>();
+            for (Subscription sub : state.subscriptions()) {
+                if (sub.chatId() != profile.chatId() || !sub.active()) continue;
+                TaskDefinition task = findTask(sub.taskId());
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                ActivePrompt prompt = findTodayPrompt(sub.id(), today, zone);
+                List<CompletionRecord> done = findTodayCompletions(sub.id(), today, zone);
+                boolean hasTodayFuture = sub.nextRunAt() != null && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
+                if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
+                String status;
+                if (prompt != null) {
+                    status = switch (prompt.state()) {
+                        case STATE_SNOOZED -> "отложено до " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
+                        case STATE_GOING_DOING_DELAY -> "пошёл делать, проверка в " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
+                        case STATE_CHECK_WAITING -> "ждёт подтверждения";
+                        default -> "ждёт ответа";
+                    };
+                } else if (!done.isEmpty()) {
+                    CompletionRecord last = done.get(done.size() - 1);
+                    status = "сделано в " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(last.completedAt(), zone));
+                } else {
+                    status = "запланировано на " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+                }
+                rows.add("• " + task.title() + " — " + status);
+            }
+            if (!rows.isEmpty()) {
+                sections.add(displayUser(profile.chatId()) + "\n" + String.join("\n", rows));
+            }
+        }
+        return sections.isEmpty() ? "На сегодня ни у кого нет активных дел." : "Дела на сегодня:\n\n" + String.join("\n\n", sections);
+    }
+
+    private ActivePrompt findTodayPrompt(String subscriptionId, LocalDate date, ZoneId zone) {
+        return state.prompts().stream()
+                .filter(p -> p.subscriptionId().equals(subscriptionId))
+                .filter(p -> ZonedDateTime.ofInstant(p.scheduledFor(), zone).toLocalDate().equals(date))
+                .max(Comparator.comparing(ActivePrompt::scheduledFor))
+                .orElse(null);
+    }
+
+    private List<CompletionRecord> findTodayCompletions(String subscriptionId, LocalDate date, ZoneId zone) {
+        return state.completions().stream()
+                .filter(c -> c.subscriptionId().equals(subscriptionId))
+                .filter(c -> ZonedDateTime.ofInstant(c.scheduledFor(), zone).toLocalDate().equals(date))
+                .sorted(Comparator.comparing(CompletionRecord::completedAt))
+                .toList();
+    }
+
+    private String displayNameForSort(UserProfile profile) {
+        if (profile.username() != null && !profile.username().isBlank()) return profile.username();
+        return profile.firstName() == null ? String.valueOf(profile.chatId()) : profile.firstName();
+    }
+
     private void replaceSubscription(Subscription updated) {
         state.subscriptions().removeIf(s -> s.chatId() == updated.chatId() && s.taskId().equals(updated.taskId()));
         state.subscriptions().add(updated);
@@ -1077,15 +1289,19 @@ public class BotService {
 • импортировать каталог JSON-файлом
 • добавлять новые дела прямо в чате через /new
 • настраивать дату и время через Mini App
-• напоминать о старте дела и перепингивать каждые 5 минут, если ты не ответил
+• напоминать о старте дела и перепингивать по твоему интервалу /reping, если ты не ответил
 • после кнопки «Пошёл делать» перепроверять через 30 минут
-• слать общие алерты другим пользователям, если дело игнорируют 30 минут
+• слать общие алерты другим пользователям, если дело игнорируют 3 часа
 
 Команды:
 /tasks — каталог дел
 /subs — мои настройки
 /new — добавить новое дело через диалог
 /import — импорт каталога JSON-файлом
+/importdb — импорт старого state/catalog/export файла в БД
+/exportdb — экспорт БД в JSON
+/today — дела на сегодня у всех пользователей
+/reping — показать/настроить интервал перепинга
 /tz — таймзона
 /cancel — отменить текущий сценарий
 /alerts — настройки общих алертов
@@ -1109,15 +1325,19 @@ public class BotService {
 • Пошёл делать
 • Отложить
 
-Если ты не нажал кнопку на стартовом пинге, я перепингую каждые 5 минут.
-Если стартовый пинг игнорируют 30 минут — разошлю общий алерт всем, у кого включены алерты.
-Если нажал «Пошёл делать», я перепроверю через 30 минут. Если этот контрольный пинг игнорируют — снова буду пинговать каждые 5 минут и через 30 минут такого игнора тоже разошлю алерт.
+Если ты не нажал кнопку на стартовом пинге, я перепингую с твоим интервалом /reping.
+Если стартовый пинг игнорируют 3 часа — разошлю общий алерт всем, у кого включены алерты.
+Если нажал «Пошёл делать», я перепроверю через 30 минут. Если этот контрольный пинг игнорируют — снова буду пинговать с твоим интервалом /reping и через 3 часа такого игнора тоже разошлю алерт.
 Если к концу дня дело, которое должно было быть сделано сегодня, не закрыто — тоже разошлю общий алерт.
 
 Импорт файлом:
 • Нажми /import
 • Отправь .json документом
 • В файле должен быть объект с полем tasks
+
+Перенос старых файлов в БД:
+• /importdb — загрузить старый state.json, catalog.json или общий export
+• /exportdb — выгрузить текущие данные одним JSON-файлом
 
 Создание нового дела:
 • Нажми /new
@@ -1127,6 +1347,10 @@ public class BotService {
 • /alerts — статус
 • /alerts on — получать алерты
 • /alerts off — не получать алерты
+
+Интервал перепинга:
+• /reping — показать текущий
+• /reping 10 — сделать перепинг каждые 10 минут
 """;
     }
 
@@ -1188,6 +1412,7 @@ public class BotService {
 
     private record DueAction(ActivePrompt prompt, TaskDefinition task, PromptReason reason) {}
     private record AlertAction(ActivePrompt prompt, TaskDefinition task, AlertReason reason) {}
+    private record TomorrowReminderAction(long chatId, String text) {}
 
     private enum PromptReason { FIRST, REPEAT, SNOOZE_FINISHED, CHECK_AFTER_WORK }
     private enum AlertReason { START_IGNORED, CHECK_IGNORED, END_OF_DAY }

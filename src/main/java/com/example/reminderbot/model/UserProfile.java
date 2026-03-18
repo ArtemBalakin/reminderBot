@@ -5,6 +5,8 @@ public record UserProfile(
         String username,
         String firstName,
         String zoneId,
-        boolean alertsEnabled
+        boolean alertsEnabled,
+        Integer repingMinutes,
+        String lastTomorrowReminderForDate
 ) {
 }

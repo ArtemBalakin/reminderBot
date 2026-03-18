@@ -22,21 +22,20 @@ public class Main {
         String zone = env("BOT_ZONE", "Asia/Almaty");
         String stateFile = env("BOT_STATE_FILE", "data/state.json");
         String catalogFile = env("BOT_CATALOG_FILE", "data/catalog.json");
-        String dbUrl = resolveDbUrl();
-        String dbUser = firstNonBlank(System.getenv("BOT_DB_USER"), System.getenv("PGUSER"), System.getenv("POSTGRES_USER"));
-        String dbPassword = firstNonBlank(System.getenv("BOT_DB_PASSWORD"), System.getenv("PGPASSWORD"), System.getenv("POSTGRES_PASSWORD"));
-        String dbSchema = env("BOT_DB_SCHEMA", "public");
         String appBaseUrl = env("APP_BASE_URL", "https://example.com");
         int webPort = Integer.parseInt(env("APP_PORT", env("PORT", "8080")));
 
         TelegramClient telegram = new TelegramClient(token);
         Store<BotState> stateStore;
         Store<Catalog> catalogStore;
-        if (dbUrl != null && !dbUrl.isBlank()) {
-            if (dbUser == null || dbUser.isBlank()) throw new IllegalStateException("Missing env: BOT_DB_USER");
-            if (dbPassword == null) throw new IllegalStateException("Missing env: BOT_DB_PASSWORD");
-            stateStore = new PostgresStore<>(dbUrl, dbUser, dbPassword, dbSchema, "state", BotState.class, BotState.empty());
-            catalogStore = new PostgresStore<>(dbUrl, dbUser, dbPassword, dbSchema, "catalog", Catalog.class, Catalog.empty());
+
+        String jdbcUrl = resolveJdbcUrl();
+        if (jdbcUrl != null) {
+            String dbUser = envAny("BOT_DB_USER", "PGUSER", "USERNAME");
+            String dbPassword = envAny("BOT_DB_PASSWORD", "PGPASSWORD", "PASSWORD");
+            String dbSchema = env("BOT_DB_SCHEMA", "public");
+            stateStore = new PostgresStore<>(jdbcUrl, dbUser, dbPassword, dbSchema, "bot_state", BotState.class, BotState.empty());
+            catalogStore = new PostgresStore<>(jdbcUrl, dbUser, dbPassword, dbSchema, "catalog", Catalog.class, Catalog.empty());
         } else {
             stateStore = new JsonStore<>(Path.of(stateFile), BotState.class, BotState.empty());
             catalogStore = new JsonStore<>(Path.of(catalogFile), Catalog.class, Catalog.empty());
@@ -55,8 +54,19 @@ public class Main {
             executor.shutdownNow();
         }));
 
-        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl +
-                ", storage=" + ((dbUrl != null && !dbUrl.isBlank()) ? "postgres" : "json"));
+        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + (jdbcUrl != null ? ", storage=postgres" : ", storage=json"));
+    }
+
+    private static String resolveJdbcUrl() {
+        String direct = envAny("BOT_DB_URL", "JDBC_POSTGRES_URI", "JDBC_DATABASE_URL");
+        if (direct != null && !direct.isBlank()) return direct;
+        String host = envAny("BOT_DB_HOST", "PGHOST", "HOST");
+        String port = envAny("BOT_DB_PORT", "PGPORT", "PORT_DB");
+        String db = envAny("BOT_DB_NAME", "PGDATABASE", "DATABASE");
+        if (host != null && port != null && db != null) {
+            return "jdbc:postgresql://" + host + ":" + port + "/" + db;
+        }
+        return null;
     }
 
     private static String requireEnv(String key) {
@@ -70,25 +80,11 @@ public class Main {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private static String resolveDbUrl() {
-        String direct = System.getenv("BOT_DB_URL");
-        if (direct != null && !direct.isBlank()) return direct;
-
-        String pgHost = firstNonBlank(System.getenv("BOT_DB_HOST"), System.getenv("PGHOST"), System.getenv("POSTGRES_HOST"));
-        if (pgHost == null || pgHost.isBlank()) {
-            return null;
-        }
-        String pgPort = firstNonBlank(System.getenv("BOT_DB_PORT"), System.getenv("PGPORT"), "5432");
-        String pgDb = firstNonBlank(System.getenv("BOT_DB_NAME"), System.getenv("PGDATABASE"), System.getenv("POSTGRES_DB"), "postgres");
-        return "jdbc:postgresql://" + pgHost + ":" + pgPort + "/" + pgDb;
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values == null) return null;
-        for (String value : values) {
+    private static String envAny(String... keys) {
+        for (String key : keys) {
+            String value = System.getenv(key);
             if (value != null && !value.isBlank()) return value;
         }
         return null;
     }
-
 }

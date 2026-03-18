@@ -6,23 +6,24 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.sql.*;
+import java.util.Properties;
 
 public class PostgresStore<T> implements Store<T> {
-    private final String url;
-    private final String username;
+    private final String jdbcUrl;
+    private final String user;
     private final String password;
     private final String schema;
-    private final String stateKey;
+    private final String storeKey;
     private final Class<T> type;
     private final T empty;
     private final ObjectMapper mapper;
 
-    public PostgresStore(String url, String username, String password, String schema, String stateKey, Class<T> type, T empty) {
-        this.url = url;
-        this.username = username;
+    public PostgresStore(String jdbcUrl, String user, String password, String schema, String storeKey, Class<T> type, T empty) {
+        this.jdbcUrl = jdbcUrl;
+        this.user = user;
         this.password = password;
         this.schema = schema == null || schema.isBlank() ? "public" : schema;
-        this.stateKey = stateKey;
+        this.storeKey = storeKey;
         this.type = type;
         this.empty = empty;
         this.mapper = new ObjectMapper()
@@ -32,73 +33,58 @@ public class PostgresStore<T> implements Store<T> {
         init();
     }
 
+    private Connection connect() throws SQLException {
+        Properties props = new Properties();
+        if (user != null) props.setProperty("user", user);
+        if (password != null) props.setProperty("password", password);
+        return DriverManager.getConnection(jdbcUrl, props);
+    }
+
+    private void init() {
+        try (Connection con = connect(); Statement st = con.createStatement()) {
+            st.execute("CREATE SCHEMA IF NOT EXISTS " + schema);
+            st.execute("CREATE TABLE IF NOT EXISTS " + schema + ".bot_store (store_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+            try (PreparedStatement ps = con.prepareStatement("INSERT INTO " + schema + ".bot_store(store_key, payload) VALUES (?, ?) ON CONFLICT (store_key) DO NOTHING")) {
+                ps.setString(1, storeKey);
+                ps.setString(2, mapper.writeValueAsString(empty));
+                ps.executeUpdate();
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize postgres store", e);
+        }
+    }
+
     @Override
     public synchronized T load() {
-        try (Connection c = connect()) {
-            upsertEmptyIfMissing(c);
-            try (PreparedStatement ps = c.prepareStatement("SELECT payload FROM " + qualifiedTable() + " WHERE state_key = ?")) {
-                ps.setString(1, stateKey);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) return empty;
-                    String json = rs.getString(1);
-                    return mapper.readValue(json, type);
+        try (Connection con = connect(); PreparedStatement ps = con.prepareStatement("SELECT payload FROM " + schema + ".bot_store WHERE store_key = ?")) {
+            ps.setString(1, storeKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return mapper.readValue(rs.getString(1), type);
                 }
             }
-        } catch (SQLException | IOException e) {
-            throw new IllegalStateException("Failed to load state from PostgreSQL for key=" + stateKey, e);
+            save(empty);
+            return empty;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load data from postgres store", e);
         }
     }
 
     @Override
     public synchronized void save(T value) {
-        try (Connection c = connect();
-             PreparedStatement ps = c.prepareStatement(
-                     "INSERT INTO " + qualifiedTable() + " (state_key, payload, updated_at) VALUES (?, CAST(? AS jsonb), now()) " +
-                             "ON CONFLICT (state_key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()")) {
-            ps.setString(1, stateKey);
+        try (Connection con = connect(); PreparedStatement ps = con.prepareStatement(
+                "INSERT INTO " + schema + ".bot_store(store_key, payload, updated_at) VALUES (?, ?, now()) " +
+                        "ON CONFLICT (store_key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()")) {
+            ps.setString(1, storeKey);
             ps.setString(2, mapper.writeValueAsString(value));
             ps.executeUpdate();
-        } catch (SQLException | IOException e) {
-            throw new IllegalStateException("Failed to save state to PostgreSQL for key=" + stateKey, e);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to save data to postgres store", e);
         }
     }
 
     @Override
     public ObjectMapper mapper() {
         return mapper;
-    }
-
-    private void init() {
-        try (Connection c = connect(); Statement st = c.createStatement()) {
-            st.execute("CREATE SCHEMA IF NOT EXISTS " + quoteIdent(schema));
-            st.execute("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (" +
-                    "state_key text PRIMARY KEY, " +
-                    "payload jsonb NOT NULL, " +
-                    "updated_at timestamptz NOT NULL DEFAULT now()" +
-                    ")");
-        } catch (SQLException e) {
-            throw new IllegalStateException("Failed to initialize PostgreSQL store", e);
-        }
-    }
-
-    private void upsertEmptyIfMissing(Connection c) throws SQLException, IOException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "INSERT INTO " + qualifiedTable() + " (state_key, payload, updated_at) VALUES (?, CAST(? AS jsonb), now()) ON CONFLICT (state_key) DO NOTHING")) {
-            ps.setString(1, stateKey);
-            ps.setString(2, mapper.writeValueAsString(empty));
-            ps.executeUpdate();
-        }
-    }
-
-    private Connection connect() throws SQLException {
-        return DriverManager.getConnection(url, username, password);
-    }
-
-    private String qualifiedTable() {
-        return quoteIdent(schema) + "." + quoteIdent("bot_store");
-    }
-
-    private String quoteIdent(String ident) {
-        return "\"" + ident.replace("\"", "\"\"") + "\"";
     }
 }
