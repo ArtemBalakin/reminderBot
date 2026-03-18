@@ -12,6 +12,8 @@ public record ActivePrompt(
         String state,
         Integer messageId,
         int alertBroadcastCount,
-        boolean endOfDayAlertSent
+        boolean endOfDayAlertSent,
+        Instant stageStartedAt,
+        boolean currentStageAlertSent
 ) {
 }

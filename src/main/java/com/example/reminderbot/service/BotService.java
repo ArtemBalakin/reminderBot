@@ -17,10 +17,13 @@ public class BotService {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy");
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-    private static final Duration REPING_DELAY = Duration.ofMinutes(30);
-    private static final String STATE_WAITING = "WAITING";
+    private static final Duration IGNORE_REPING_DELAY = Duration.ofMinutes(5);
+    private static final Duration GOING_DOING_CHECK_DELAY = Duration.ofMinutes(30);
+    private static final Duration IGNORE_ALERT_DELAY = Duration.ofMinutes(30);
+    private static final String STATE_START_WAITING = "START_WAITING";
     private static final String STATE_SNOOZED = "SNOOZED";
-    private static final String STATE_IN_PROGRESS = "IN_PROGRESS";
+    private static final String STATE_GOING_DOING_DELAY = "GOING_DOING_DELAY";
+    private static final String STATE_CHECK_WAITING = "CHECK_WAITING";
 
     private final TelegramClient telegram;
     private final JsonStore<BotState> stateStore;
@@ -81,7 +84,8 @@ public class BotService {
                 TaskDefinition task = findTask(sub.taskId());
                 if (task == null) continue;
                 ActivePrompt prompt = new ActivePrompt(
-                        shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(), now.plus(REPING_DELAY), STATE_WAITING, null, 0, false
+                        shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(), now.plus(IGNORE_REPING_DELAY),
+                        STATE_START_WAITING, null, 0, false, now, false
                 );
                 state.prompts().add(prompt);
                 blockedSubs.add(sub.id());
@@ -99,7 +103,7 @@ public class BotService {
                 if (!prompt.endOfDayAlertSent() && today.isAfter(scheduledDate)) {
                     ActivePrompt updated = new ActivePrompt(
                             prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), prompt.nextPingAt(),
-                            prompt.state(), prompt.messageId(), prompt.alertBroadcastCount(), true
+                            prompt.state(), prompt.messageId(), prompt.alertBroadcastCount(), true, prompt.stageStartedAt(), prompt.currentStageAlertSent()
                     );
                     state.prompts().set(i, updated);
                     alerts.add(new AlertAction(updated, task, AlertReason.END_OF_DAY));
@@ -107,21 +111,42 @@ public class BotService {
                 }
 
                 if (prompt.nextPingAt() == null || prompt.nextPingAt().isAfter(now)) continue;
-                PromptReason reason = switch (prompt.state()) {
-                    case STATE_SNOOZED -> PromptReason.SNOOZE_FINISHED;
-                    case STATE_IN_PROGRESS -> PromptReason.CHECK_AFTER_WORK;
-                    default -> PromptReason.REPEAT;
-                };
-                boolean shouldBroadcast = !STATE_SNOOZED.equals(prompt.state());
+
+                if (STATE_SNOOZED.equals(prompt.state())) {
+                    ActivePrompt updated = new ActivePrompt(
+                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                            STATE_START_WAITING, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), now, false
+                    );
+                    state.prompts().set(i, updated);
+                    actions.add(new DueAction(updated, task, PromptReason.SNOOZE_FINISHED));
+                    continue;
+                }
+
+                if (STATE_GOING_DOING_DELAY.equals(prompt.state())) {
+                    ActivePrompt updated = new ActivePrompt(
+                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                            STATE_CHECK_WAITING, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), now, false
+                    );
+                    state.prompts().set(i, updated);
+                    actions.add(new DueAction(updated, task, PromptReason.CHECK_AFTER_WORK));
+                    continue;
+                }
+
+                boolean isStartStage = STATE_START_WAITING.equals(prompt.state());
+                boolean isCheckStage = STATE_CHECK_WAITING.equals(prompt.state());
+                if (!isStartStage && !isCheckStage) continue;
+
+                Instant stageStartedAt = prompt.stageStartedAt() == null ? now : prompt.stageStartedAt();
+                boolean shouldBroadcast = !prompt.currentStageAlertSent() && !Duration.between(stageStartedAt, now).minus(IGNORE_ALERT_DELAY).isNegative();
                 ActivePrompt updated = new ActivePrompt(
-                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
-                        now.plus(REPING_DELAY), STATE_WAITING, prompt.messageId(),
-                        prompt.alertBroadcastCount() + (shouldBroadcast ? 1 : 0), prompt.endOfDayAlertSent()
+                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), now.plus(IGNORE_REPING_DELAY),
+                        prompt.state(), prompt.messageId(), prompt.alertBroadcastCount() + (shouldBroadcast ? 1 : 0),
+                        prompt.endOfDayAlertSent(), stageStartedAt, prompt.currentStageAlertSent() || shouldBroadcast
                 );
                 state.prompts().set(i, updated);
-                actions.add(new DueAction(updated, task, reason));
+                actions.add(new DueAction(updated, task, isStartStage ? PromptReason.REPEAT : PromptReason.CHECK_AFTER_WORK));
                 if (shouldBroadcast) {
-                    alerts.add(new AlertAction(updated, task, AlertReason.NO_REACTION));
+                    alerts.add(new AlertAction(updated, task, isStartStage ? AlertReason.START_IGNORED : AlertReason.CHECK_IGNORED));
                 }
             }
             saveState();
@@ -721,7 +746,7 @@ public class BotService {
                 return;
             }
             replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
-                    Instant.now().plus(Duration.ofHours(hours)), STATE_SNOOZED, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent()));
+                    Instant.now().plus(Duration.ofHours(hours)), STATE_SNOOZED, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), null, false));
             saveState();
         }
         telegram.answerCallbackQuery(callbackId, "Отложено на " + hours + " ч");
@@ -736,11 +761,11 @@ public class BotService {
                 return;
             }
             replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
-                    Instant.now().plus(Duration.ofMinutes(30)), STATE_IN_PROGRESS, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent()));
+                    Instant.now().plus(GOING_DOING_CHECK_DELAY), STATE_GOING_DOING_DELAY, prompt.messageId(), prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), null, false));
             saveState();
         }
         telegram.answerCallbackQuery(callbackId, "Хорошо");
-        telegram.sendMessage(chatId, "Ок, перепроверю через 30 минут.");
+        telegram.sendMessage(chatId, "Ок, считаю, что ты пошёл делать. Через 30 минут спрошу, сделал ли ты. Если потом молчать — буду перепингивать каждые 5 минут.");
     }
 
     private void sendSnoozeHoursPicker(long chatId, String promptId) {
@@ -761,7 +786,7 @@ public class BotService {
         Integer messageId = telegram.sendMessage(prompt.chatId(), header + "\n\n" + task.title() + "\nПлан: " + when, promptKeyboard(prompt.id()));
         if (messageId != null) {
             synchronized (this) {
-                replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), prompt.nextPingAt(), prompt.state(), messageId, prompt.alertBroadcastCount(), prompt.endOfDayAlertSent()));
+                replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(), prompt.nextPingAt(), prompt.state(), messageId, prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), prompt.stageStartedAt(), prompt.currentStageAlertSent()));
                 saveState();
             }
         }
@@ -967,17 +992,23 @@ public class BotService {
                 : (owner.username() != null && !owner.username().isBlank() ? "@" + owner.username() : owner.firstName());
         String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId()))).format(DATE_TIME_FMT);
         String header = switch (reason) {
-            case NO_REACTION -> "🚨 Алерт: дело игнорируют";
+            case START_IGNORED -> "🚨 Алерт: игнорирует начало дела уже 30 минут";
+            case CHECK_IGNORED -> "🚨 Алерт: не подтвердил завершение после кнопки «Пошёл делать»";
             case END_OF_DAY -> "🚨 Алерт: день закончился, а дело не закрыто";
+        };
+        String details = switch (reason) {
+            case START_IGNORED -> "Человек не отреагировал на стартовый пинг. Бот уже перепингивает каждые 5 минут.";
+            case CHECK_IGNORED -> "Человек нажал «Пошёл делать», но потом 30 минут игнорирует проверку «Сделал?». Бот уже перепингивает каждые 5 минут.";
+            case END_OF_DAY -> "Сегодня это дело должно было быть закрыто, но подтверждения так и не было.";
         };
         String text = header + "\n\n" +
                 "Дело: " + task.title() + "\n" +
                 "Кто: " + who + "\n" +
                 "Плановое время: " + when + "\n\n" +
-                "Если не хочешь такие уведомления, нажми /alerts off";
+                details + "\n\n" +
+                "Чтобы не получать такие уведомления: /alerts off";
         for (UserProfile profile : new ArrayList<>(state.users().values())) {
             if (!profile.alertsEnabled()) continue;
-            if (profile.chatId() == prompt.chatId()) continue;
             telegram.sendMessage(profile.chatId(), text, alertsKeyboard());
         }
     }
@@ -1032,8 +1063,9 @@ public class BotService {
 • импортировать каталог JSON-файлом
 • добавлять новые дела прямо в чате через /new
 • настраивать дату и время через Mini App
-• напоминать и перепингивать каждые 30 минут, если ты не ответил
-• слать общие алерты другим пользователям, если дело игнорируют
+• напоминать о старте дела и перепингивать каждые 5 минут, если ты не ответил
+• после кнопки «Пошёл делать» перепроверять через 30 минут
+• слать общие алерты другим пользователям, если дело игнорируют 30 минут
 
 Команды:
 /tasks — каталог дел
@@ -1063,9 +1095,10 @@ public class BotService {
 • Пошёл делать
 • Отложить
 
-Если ты не нажал кнопку, я перепингую через 30 минут.
-Если нажал «Пошёл делать», я перепроверю через 30 минут.
-Если дело игнорируют или день закончился, я могу разослать общий алерт всем, у кого включены алерты.
+Если ты не нажал кнопку на стартовом пинге, я перепингую каждые 5 минут.
+Если стартовый пинг игнорируют 30 минут — разошлю общий алерт всем, у кого включены алерты.
+Если нажал «Пошёл делать», я перепроверю через 30 минут. Если этот контрольный пинг игнорируют — снова буду пинговать каждые 5 минут и через 30 минут такого игнора тоже разошлю алерт.
+Если к концу дня дело, которое должно было быть сделано сегодня, не закрыто — тоже разошлю общий алерт.
 
 Импорт файлом:
 • Нажми /import
@@ -1143,5 +1176,5 @@ public class BotService {
     private record AlertAction(ActivePrompt prompt, TaskDefinition task, AlertReason reason) {}
 
     private enum PromptReason { FIRST, REPEAT, SNOOZE_FINISHED, CHECK_AFTER_WORK }
-    private enum AlertReason { NO_REACTION, END_OF_DAY }
+    private enum AlertReason { START_IGNORED, CHECK_IGNORED, END_OF_DAY }
 }
