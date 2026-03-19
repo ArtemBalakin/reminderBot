@@ -1,0 +1,559 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-001-users
+      author: openai
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: username
+                  type: VARCHAR(255)
+              - column:
+                  name: first_name
+                  type: VARCHAR(255)
+              - column:
+                  name: zone_id
+                  type: VARCHAR(128)
+                  defaultValue: Asia/Almaty
+                  constraints:
+                    nullable: false
+              - column:
+                  name: alerts_enabled
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reping_minutes
+                  type: INTEGER
+                  defaultValueNumeric: 5
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addCheckConstraint:
+            tableName: users
+            constraintName: chk_users_reping_minutes
+            checkConstraint: reping_minutes between 1 and 180
+
+  - changeSet:
+      id: 001-002-tasks
+      author: openai
+      changes:
+        - createTable:
+            tableName: tasks
+            columns:
+              - column:
+                  name: id
+                  type: VARCHAR(120)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: title
+                  type: VARCHAR(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: kind
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: frequency_unit
+                  type: VARCHAR(16)
+              - column:
+                  name: frequency_interval
+                  type: INTEGER
+              - column:
+                  name: recommended_slots
+                  type: INTEGER
+              - column:
+                  name: note
+                  type: TEXT
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addCheckConstraint:
+            tableName: tasks
+            constraintName: chk_tasks_kind
+            checkConstraint: kind in ('RECURRING','ONE_TIME_THIS_WEEK','ONE_TIME_NEXT_WEEK','MANUAL')
+        - addCheckConstraint:
+            tableName: tasks
+            constraintName: chk_tasks_frequency_unit
+            checkConstraint: frequency_unit is null or frequency_unit in ('DAY','WEEK','MONTH')
+        - addCheckConstraint:
+            tableName: tasks
+            constraintName: chk_tasks_frequency_interval
+            checkConstraint: frequency_interval is null or frequency_interval > 0
+
+  - changeSet:
+      id: 001-003-subscriptions
+      author: openai
+      changes:
+        - createTable:
+            tableName: subscriptions
+            columns:
+              - column:
+                  name: id
+                  type: VARCHAR(120)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: task_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: day_of_week
+                  type: VARCHAR(16)
+              - column:
+                  name: day_of_month
+                  type: INTEGER
+              - column:
+                  name: zone_id
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: next_run_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: one_time_done
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: subscriptions
+            baseColumnNames: task_id
+            referencedTableName: tasks
+            referencedColumnNames: id
+            constraintName: fk_subscriptions_task
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: subscriptions
+            baseColumnNames: chat_id
+            referencedTableName: users
+            referencedColumnNames: chat_id
+            constraintName: fk_subscriptions_user
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: subscriptions
+            columnNames: task_id, chat_id
+            constraintName: uq_subscriptions_task_user
+        - addCheckConstraint:
+            tableName: subscriptions
+            constraintName: chk_subscriptions_day_of_week
+            checkConstraint: day_of_week is null or day_of_week in ('MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY')
+        - addCheckConstraint:
+            tableName: subscriptions
+            constraintName: chk_subscriptions_day_of_month
+            checkConstraint: day_of_month is null or day_of_month between 1 and 31
+
+  - changeSet:
+      id: 001-004-subscription-daily-times
+      author: openai
+      changes:
+        - createTable:
+            tableName: subscription_daily_times
+            columns:
+              - column:
+                  name: subscription_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_time
+                  type: TIME
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: subscription_daily_times
+            columnNames: subscription_id, slot_time
+            constraintName: pk_subscription_daily_times
+        - addForeignKeyConstraint:
+            baseTableName: subscription_daily_times
+            baseColumnNames: subscription_id
+            referencedTableName: subscriptions
+            referencedColumnNames: id
+            constraintName: fk_subscription_daily_times_subscription
+            onDelete: CASCADE
+
+  - changeSet:
+      id: 001-005-prompts
+      author: openai
+      changes:
+        - createTable:
+            tableName: prompts
+            columns:
+              - column:
+                  name: id
+                  type: VARCHAR(120)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: subscription_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: task_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scheduled_for
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: next_ping_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: state
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: message_id
+                  type: INTEGER
+              - column:
+                  name: alert_broadcast_count
+                  type: INTEGER
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: end_of_day_alert_sent
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: stage_started_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: current_stage_alert_sent
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: prompts
+            baseColumnNames: subscription_id
+            referencedTableName: subscriptions
+            referencedColumnNames: id
+            constraintName: fk_prompts_subscription
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: prompts
+            baseColumnNames: task_id
+            referencedTableName: tasks
+            referencedColumnNames: id
+            constraintName: fk_prompts_task
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: prompts
+            baseColumnNames: chat_id
+            referencedTableName: users
+            referencedColumnNames: chat_id
+            constraintName: fk_prompts_user
+            onDelete: CASCADE
+        - addCheckConstraint:
+            tableName: prompts
+            constraintName: chk_prompts_state
+            checkConstraint: state in ('START_WAITING','SNOOZED','GOING_DOING_DELAY','CHECK_WAITING')
+
+  - changeSet:
+      id: 001-006-completion-records
+      author: openai
+      changes:
+        - createTable:
+            tableName: completion_records
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: prompt_id
+                  type: VARCHAR(120)
+              - column:
+                  name: subscription_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: task_id
+                  type: VARCHAR(120)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scheduled_for
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: completed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: outcome
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: note
+                  type: TEXT
+        - addForeignKeyConstraint:
+            baseTableName: completion_records
+            baseColumnNames: subscription_id
+            referencedTableName: subscriptions
+            referencedColumnNames: id
+            constraintName: fk_completion_records_subscription
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: completion_records
+            baseColumnNames: task_id
+            referencedTableName: tasks
+            referencedColumnNames: id
+            constraintName: fk_completion_records_task
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: completion_records
+            baseColumnNames: chat_id
+            referencedTableName: users
+            referencedColumnNames: chat_id
+            constraintName: fk_completion_records_user
+            onDelete: CASCADE
+        - addCheckConstraint:
+            tableName: completion_records
+            constraintName: chk_completion_records_outcome
+            checkConstraint: outcome in ('DONE','SKIPPED','CANCELLED','AUTO_CLOSED')
+
+  - changeSet:
+      id: 001-007-sessions
+      author: openai
+      changes:
+        - createTable:
+            tableName: sessions
+            columns:
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: session_type
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: session_data
+                  type: JSONB
+                  defaultValueComputed: '''{}''::jsonb'
+                  constraints:
+                    nullable: false
+              - column:
+                  name: helper_message_id
+                  type: INTEGER
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: sessions
+            baseColumnNames: chat_id
+            referencedTableName: users
+            referencedColumnNames: chat_id
+            constraintName: fk_sessions_user
+            onDelete: CASCADE
+
+  - changeSet:
+      id: 001-008-app-meta
+      author: openai
+      changes:
+        - createTable:
+            tableName: app_meta
+            columns:
+              - column:
+                  name: meta_key
+                  type: VARCHAR(120)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: meta_value
+                  type: TEXT
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - insert:
+            tableName: app_meta
+            columns:
+              - column:
+                  name: meta_key
+                  value: last_update_id
+              - column:
+                  name: meta_value
+                  value: '0'
+
+  - changeSet:
+      id: 001-009-indexes
+      author: openai
+      changes:
+        - createIndex:
+            tableName: tasks
+            indexName: idx_tasks_active
+            columns:
+              - column:
+                  name: active
+        - createIndex:
+            tableName: subscriptions
+            indexName: idx_subscriptions_next_run_at
+            columns:
+              - column:
+                  name: next_run_at
+        - createIndex:
+            tableName: subscriptions
+            indexName: idx_subscriptions_chat_id
+            columns:
+              - column:
+                  name: chat_id
+        - createIndex:
+            tableName: prompts
+            indexName: idx_prompts_next_ping_at
+            columns:
+              - column:
+                  name: next_ping_at
+        - createIndex:
+            tableName: prompts
+            indexName: idx_prompts_chat_id_scheduled_for
+            columns:
+              - column:
+                  name: chat_id
+              - column:
+                  name: scheduled_for
+        - createIndex:
+            tableName: prompts
+            indexName: idx_prompts_subscription_id
+            columns:
+              - column:
+                  name: subscription_id
+        - createIndex:
+            tableName: completion_records
+            indexName: idx_completion_records_chat_id_scheduled_for
+            columns:
+              - column:
+                  name: chat_id
+              - column:
+                  name: scheduled_for
+        - createIndex:
+            tableName: completion_records
+            indexName: idx_completion_records_task_id_completed_at
+            columns:
+              - column:
+                  name: task_id
+              - column:
+                  name: completed_at
+        - createIndex:
+            tableName: sessions
+            indexName: idx_sessions_updated_at
+            columns:
+              - column:
+                  name: updated_at
