@@ -20,7 +20,7 @@ public class BotService {
     private static final Duration IGNORE_REPING_DELAY = Duration.ofMinutes(5);
     private static final Duration GOING_DOING_CHECK_DELAY = Duration.ofMinutes(30);
     private static final Duration IGNORE_ALERT_DELAY = Duration.ofHours(3);
-    private static final LocalTime TOMORROW_REMINDER_TIME = LocalTime.of(23, 0);
+    private static final LocalTime TOMORROW_REMINDER_TIME = LocalTime.of(19, 0);
     private static final Duration TOMORROW_REMINDER_WINDOW = Duration.ofMinutes(5);
     private static final int DEFAULT_REPING_MINUTES = 5;
     private static final String STATE_START_WAITING = "START_WAITING";
@@ -169,7 +169,7 @@ public class BotService {
     }
 
     public synchronized Map<String, Object> apiSubscribe(long chatId, String taskRef, String mode,
-            List<String> times, String dateStr, String timeStr) {
+            List<String> times, String dateStr, String timeStr, List<String> daysOfWeek, List<Integer> daysOfMonth) {
         TaskDefinition task = resolveTask(taskRef);
         if (task == null) return Map.of("error", "Дело не найдено");
         if (task.kind() == TaskKind.MANUAL) return Map.of("error", "Ручное дело без расписания");
@@ -186,6 +186,24 @@ public class BotService {
                     .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
             if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
             updated = buildDailySubscription(profile, task, new ArrayList<>(parsed));
+        } else if ("weekly".equals(mode)) {
+            List<String> parsed = times.stream()
+                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+            if (daysOfWeek == null || daysOfWeek.isEmpty()) return Map.of("error", "Нужно выбрать дни недели");
+            if (parsed.size() * daysOfWeek.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
+                return Map.of("error", "Нужно выбрать больше слотов");
+            }
+            updated = buildWeeklySubscription(profile, task, new ArrayList<>(parsed), daysOfWeek);
+        } else if ("monthly".equals(mode)) {
+            List<String> parsed = times.stream()
+                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+            if (daysOfMonth == null || daysOfMonth.isEmpty()) return Map.of("error", "Нужно выбрать числа месяца");
+            if (parsed.size() * daysOfMonth.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
+                return Map.of("error", "Нужно выбрать больше слотов");
+            }
+            updated = buildMonthlySubscription(profile, task, new ArrayList<>(parsed), daysOfMonth);
         } else {
             LocalDate date = LocalDate.parse(dateStr);
             LocalTime time = parseTime(timeStr);
@@ -1032,7 +1050,25 @@ public class BotService {
                 profile.zoneId(),
                 next,
                 true,
-                false);
+                false,
+                null,
+                null);
+    }
+
+    private Subscription buildWeeklySubscription(UserProfile profile, TaskDefinition task, List<String> times, List<String> daysOfWeek) {
+        ZoneId zone = ZoneId.of(profile.zoneId());
+        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Instant next = computeNextWeekly(times, daysOfWeek, task.schedule().interval(), zone, Instant.now());
+        return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                times, null, null, profile.zoneId(), next, true, false, daysOfWeek, null);
+    }
+
+    private Subscription buildMonthlySubscription(UserProfile profile, TaskDefinition task, List<String> times, List<Integer> daysOfMonth) {
+        ZoneId zone = ZoneId.of(profile.zoneId());
+        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Instant next = computeNextMonthly(times, daysOfMonth, task.schedule().interval(), zone, Instant.now());
+        return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
+                times, null, null, profile.zoneId(), next, true, false, null, daysOfMonth);
     }
 
     private Subscription buildDatedSubscription(UserProfile profile, TaskDefinition task, LocalDate date,
@@ -1047,21 +1083,21 @@ public class BotService {
             case RECURRING -> {
                 if (task.schedule().unit() == FrequencyUnit.WEEK) {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                            List.of(time.format(TIME_FMT)), date.getDayOfWeek().name(), null, profile.zoneId(),
-                            chosen.toInstant(), true, false);
+                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(),
+                            chosen.toInstant(), true, false, List.of(date.getDayOfWeek().name()), null);
                 } else if (task.schedule().unit() == FrequencyUnit.MONTH) {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                            List.of(time.format(TIME_FMT)), null, date.getDayOfMonth(), profile.zoneId(),
-                            chosen.toInstant(), true, false);
+                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(),
+                            chosen.toInstant(), true, false, null, List.of(date.getDayOfMonth()));
                 } else {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
                             List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true,
-                            false);
+                            false, null, null);
                 }
             }
             case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK ->
                 new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                        List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true, false);
+                        List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true, false, null, null);
             case MANUAL -> throw new IllegalArgumentException("Для ручного дела нельзя задать дату");
         };
     }
@@ -1301,7 +1337,7 @@ public class BotService {
             Instant now) {
         if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
             return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(),
-                    sub.dayOfMonth(), sub.zoneId(), sub.nextRunAt(), sub.active(), true);
+                    sub.dayOfMonth(), sub.zoneId(), sub.nextRunAt(), sub.active(), true, sub.daysOfWeek(), sub.daysOfMonth());
         }
         if (task.kind() == TaskKind.MANUAL) {
             return sub;
@@ -1310,11 +1346,11 @@ public class BotService {
         Instant base = previousScheduledFor.isAfter(now) ? previousScheduledFor.plusSeconds(1) : now;
         Instant next = switch (task.schedule().unit()) {
             case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, base);
-            case WEEK -> computeNextWeekly(sub, task, zone, base);
-            case MONTH -> computeNextMonthly(sub, task, zone, base);
+            case WEEK -> computeNextWeekly(sub.dailyTimes(), sub.daysOfWeek(), task.schedule().interval(), zone, base);
+            case MONTH -> computeNextMonthly(sub.dailyTimes(), sub.daysOfMonth(), task.schedule().interval(), zone, base);
         };
         return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(),
-                sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false);
+                sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false, sub.daysOfWeek(), sub.daysOfMonth());
     }
 
     private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant base) {
@@ -1338,29 +1374,67 @@ public class BotService {
         throw new IllegalStateException("Не смог посчитать nextRunAt для ежедневного дела");
     }
 
-    private Instant computeNextWeekly(Subscription sub, TaskDefinition task, ZoneId zone, Instant base) {
-        LocalTime time = parseTime(sub.dailyTimes().getFirst());
-        DayOfWeek targetDay = DayOfWeek.valueOf(sub.dayOfWeek());
-        ZonedDateTime baseZdt = ZonedDateTime.ofInstant(base, zone);
-        ZonedDateTime firstCandidate = baseZdt.with(TemporalAdjusters.nextOrSame(targetDay)).with(time);
-        if (!firstCandidate.toInstant().isAfter(base)) {
-            firstCandidate = firstCandidate.plusWeeks(task.schedule().interval());
+    private Instant computeNextWeekly(List<String> times, List<String> daysOfWeek, int intervalWeeks, ZoneId zone, Instant base) {
+        if (times == null || times.isEmpty() || daysOfWeek == null || daysOfWeek.isEmpty()) {
+            throw new IllegalArgumentException("Нужно хотя бы одно время и один день недели");
         }
-        return firstCandidate.toInstant();
+        List<LocalTime> localTimes = times.stream().map(this::parseTime).sorted().toList();
+        List<DayOfWeek> dows = daysOfWeek.stream().map(DayOfWeek::valueOf).toList();
+        
+        ZonedDateTime now = ZonedDateTime.ofInstant(base, zone);
+        LocalDate weekStart = now.toLocalDate().with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+        
+        for (int addDays = 0; addDays <= 1000; addDays++) {
+            LocalDate date = now.toLocalDate().plusDays(addDays);
+            LocalDate currentWeekStart = date.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+            long weeksBetween = java.time.temporal.ChronoUnit.WEEKS.between(weekStart, currentWeekStart);
+            
+            if (weeksBetween % intervalWeeks != 0) continue;
+            if (!dows.contains(date.getDayOfWeek())) continue;
+            
+            for (LocalTime lt : localTimes) {
+                ZonedDateTime candidate = ZonedDateTime.of(date, lt, zone);
+                if (candidate.toInstant().isAfter(base)) {
+                    return candidate.toInstant();
+                }
+            }
+        }
+        throw new IllegalStateException("Не смог посчитать nextRunAt для еженедельного дела");
     }
 
-    private Instant computeNextMonthly(Subscription sub, TaskDefinition task, ZoneId zone, Instant base) {
-        LocalTime time = parseTime(sub.dailyTimes().getFirst());
-        ZonedDateTime baseZdt = ZonedDateTime.ofInstant(base, zone);
-        int desiredDay = sub.dayOfMonth() == null ? baseZdt.getDayOfMonth() : sub.dayOfMonth();
-        ZonedDateTime candidate = baseZdt.withDayOfMonth(Math.min(desiredDay, baseZdt.toLocalDate().lengthOfMonth()))
-                .with(time);
-        if (!candidate.toInstant().isAfter(base)) {
-            candidate = candidate.plusMonths(task.schedule().interval());
+    private Instant computeNextMonthly(List<String> times, List<Integer> daysOfMonth, int intervalMonths, ZoneId zone, Instant base) {
+        if (times == null || times.isEmpty() || daysOfMonth == null || daysOfMonth.isEmpty()) {
+            throw new IllegalArgumentException("Нужно хотя бы одно время и один день месяца");
         }
-        int actualDay = Math.min(desiredDay, candidate.toLocalDate().lengthOfMonth());
-        return ZonedDateTime.of(LocalDate.of(candidate.getYear(), candidate.getMonth(), actualDay), time, zone)
-                .toInstant();
+        List<LocalTime> localTimes = times.stream().map(this::parseTime).sorted().toList();
+        
+        ZonedDateTime now = ZonedDateTime.ofInstant(base, zone);
+        LocalDate monthStart = now.toLocalDate().withDayOfMonth(1);
+        
+        for (int addDays = 0; addDays <= 3000; addDays++) {
+            LocalDate date = now.toLocalDate().plusDays(addDays);
+            LocalDate currentMonthStart = date.withDayOfMonth(1);
+            long monthsBetween = java.time.temporal.ChronoUnit.MONTHS.between(monthStart, currentMonthStart);
+            
+            if (monthsBetween % intervalMonths != 0) continue;
+            
+            boolean matchDay = false;
+            for (int dom : daysOfMonth) {
+                if (date.getDayOfMonth() == dom || (date.getDayOfMonth() == date.lengthOfMonth() && dom > date.lengthOfMonth())) {
+                    matchDay = true;
+                    break;
+                }
+            }
+            if (!matchDay) continue;
+            
+            for (LocalTime lt : localTimes) {
+                ZonedDateTime candidate = ZonedDateTime.of(date, lt, zone);
+                if (candidate.toInstant().isAfter(base)) {
+                    return candidate.toInstant();
+                }
+            }
+        }
+        throw new IllegalStateException("Не смог посчитать nextRunAt для ежемесячного дела");
     }
 
     private UserProfile registerUser(TelegramClient.Message message) {
@@ -1474,10 +1548,12 @@ public class BotService {
             case RECURRING -> switch (task.schedule().unit()) {
                 case DAY -> "каждые " + task.schedule().interval() + " дн. в " + String.join(", ", sub.dailyTimes())
                         + slotsText + " (" + sub.zoneId() + ")";
-                case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + dayRu(sub.dayOfWeek()) + " в "
-                        + sub.dailyTimes().getFirst() + slotsText + " (" + sub.zoneId() + ")";
-                case MONTH -> "каждые " + task.schedule().interval() + " мес. " + sub.dayOfMonth() + " числа в "
-                        + sub.dailyTimes().getFirst() + slotsText + " (" + sub.zoneId() + ")";
+                case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + 
+                        (sub.daysOfWeek() != null ? sub.daysOfWeek().stream().map(this::dayRu).collect(Collectors.joining(", ")) : dayRu(sub.dayOfWeek())) + 
+                        " в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + sub.zoneId() + ")";
+                case MONTH -> "каждые " + task.schedule().interval() + " мес. " + 
+                        (sub.daysOfMonth() != null ? sub.daysOfMonth().stream().map(String::valueOf).collect(Collectors.joining(", ")) : sub.dayOfMonth()) + 
+                        " числа в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + sub.zoneId() + ")";
             };
         };
     }
@@ -1785,7 +1861,9 @@ public class BotService {
                     sub.zoneId(),
                     sub.nextRunAt(),
                     sub.active(),
-                    sub.oneTimeDone());
+                    sub.oneTimeDone(),
+                    sub.daysOfWeek(),
+                    sub.daysOfMonth());
             state.subscriptions().removeIf(s -> s.id().equals(subscriptionId));
             state.subscriptions().add(updated);
             state.prompts().removeIf(p -> p.subscriptionId().equals(subscriptionId));
@@ -2098,10 +2176,7 @@ public class BotService {
                 LocalDate dueDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
                 if (!dueDate.equals(tomorrow))
                     continue;
-                String schedule = task.kind() == TaskKind.RECURRING && task.schedule() != null
-                        && task.schedule().unit() == FrequencyUnit.DAY
-                                ? String.join(", ", sub.dailyTimes())
-                                : sub.dailyTimes().isEmpty() ? "без времени" : sub.dailyTimes().getFirst();
+                String schedule = sub.dailyTimes().isEmpty() ? "без времени" : String.join(", ", sub.dailyTimes());
                 items.add("• " + task.title() + " — " + schedule);
             }
             UserProfile updated = new UserProfile(profile.chatId(), profile.username(), profile.firstName(),

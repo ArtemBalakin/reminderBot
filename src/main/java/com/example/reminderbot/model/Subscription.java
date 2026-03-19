@@ -14,9 +14,23 @@ public record Subscription(
         String zoneId,
         Instant nextRunAt,
         boolean active,
-        boolean oneTimeDone
+        boolean oneTimeDone,
+        List<String> daysOfWeek,
+        List<Integer> daysOfMonth
 ) {
     public Subscription {
         dailyTimes = dailyTimes == null ? new ArrayList<>() : new ArrayList<>(dailyTimes);
+        
+        List<String> dws = daysOfWeek;
+        if (dws == null) {
+            dws = dayOfWeek != null ? List.of(dayOfWeek) : new ArrayList<>();
+        }
+        daysOfWeek = new ArrayList<>(dws);
+        
+        List<Integer> dms = daysOfMonth;
+        if (dms == null) {
+            dms = dayOfMonth != null ? List.of(dayOfMonth) : new ArrayList<>();
+        }
+        daysOfMonth = new ArrayList<>(dms);
     }
 }

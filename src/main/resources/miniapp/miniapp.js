@@ -173,14 +173,48 @@
     const data = await api('/api/task?ref=' + encodeURIComponent(params.ref));
     if (data.error) { app.innerHTML = backRow() + `<div class="empty"><div class="empty-text">${esc(data.error)}</div></div>`; return; }
 
-    const isDaily = data.kind === 'RECURRING' && data.scheduleUnit === 'DAY';
-    let times = (data.mySubscription && data.mySubscription.dailyTimes) || [];
+    const isRecurring = data.kind === 'RECURRING';
+    const isDaily = isRecurring && data.scheduleUnit === 'DAY';
+    const isWeekly = isRecurring && data.scheduleUnit === 'WEEK';
+    const isMonthly = isRecurring && data.scheduleUnit === 'MONTH';
+    
+    window.__subTimes = (data.mySubscription && data.mySubscription.dailyTimes) ? [...data.mySubscription.dailyTimes] : [];
+    window.__subDaysOfWeek = (data.mySubscription && data.mySubscription.daysOfWeek) ? [...data.mySubscription.daysOfWeek] : [];
+    window.__subDaysOfMonth = (data.mySubscription && data.mySubscription.daysOfMonth) ? [...data.mySubscription.daysOfMonth] : [];
 
     let html = backRow();
     html += `<div class="page-header">Настройка: ${esc(data.title)}</div>`;
     html += `<div class="card-sub">${esc(data.frequency)}</div>`;
 
-    if (isDaily) {
+    if (isRecurring) {
+      if (isWeekly) {
+        html += `<div class="input-group" style="margin-top:16px"><label>Дни недели</label><div class="dow-selector" style="margin-top:8px">`;
+        const dows = [{v:'MONDAY',l:'Пн'},{v:'TUESDAY',l:'Вт'},{v:'WEDNESDAY',l:'Ср'},{v:'THURSDAY',l:'Чт'},{v:'FRIDAY',l:'Пт'},{v:'SATURDAY',l:'Сб'},{v:'SUNDAY',l:'Вс'}];
+        window.__toggleDow = (val) => {
+           if (window.__subDaysOfWeek.includes(val)) window.__subDaysOfWeek = window.__subDaysOfWeek.filter(x => x !== val);
+           else window.__subDaysOfWeek.push(val);
+           renderDowChips();
+        };
+        dows.forEach(d => {
+          html += `<label style="display:inline-flex; align-items:center; margin-right:12px; margin-bottom:8px;">
+                     <input type="checkbox" value="${d.v}" ${window.__subDaysOfWeek.includes(d.v) ? 'checked' : ''} onchange="window.__toggleDow('${d.v}')" style="margin-right:4px"> ${d.l}
+                   </label>`;
+        });
+        html += `</div></div>`;
+      }
+      
+      if (isMonthly) {
+        html += `
+          <div class="input-group" style="margin-top:16px">
+            <label>Числа месяца</label>
+            <div style="display:flex;gap:8px">
+              <input type="number" id="sub-dom" class="input" min="1" max="31" style="flex:1" placeholder="1-31">
+              <button class="btn btn-secondary btn-sm" style="width:auto;flex:none" onclick="window.__addDom()">Добавить</button>
+            </div>
+          </div>
+          <div id="dom-chips" class="time-chips"></div>`;
+      }
+
       html += `
         <div class="input-group" style="margin-top:16px">
           <label>Время напоминаний</label>
@@ -203,15 +237,40 @@
           <input type="time" id="sub-dated-time" class="input" step="60">
         </div>`;
     }
-    html += `<button class="btn btn-primary" style="margin-top:16px" onclick="window.__saveSub('${data.number}', ${isDaily})">Сохранить</button>`;
+    html += `<button class="btn btn-primary" style="margin-top:16px" onclick="window.__saveSub('${data.number}', '${data.kind}', '${data.scheduleUnit}')">Сохранить</button>`;
     app.innerHTML = html;
 
-    // render initial times for daily
-    if (isDaily) {
-      window.__subTimes = [...times];
+    if (isRecurring) {
       renderTimeChips();
+      if (isMonthly) renderDomChips();
     }
   }
+
+  function renderDowChips() {} // Only state toggle is needed, UI is naturally handled by checkboxes
+  
+  function renderDomChips() {
+    const el = document.getElementById('dom-chips');
+    if (!el) return;
+    const doms = window.__subDaysOfMonth || [];
+    el.innerHTML = doms.sort((a,b)=>a-b).map((d, i) =>
+      `<div class="time-chip"><span>${d}</span><button class="remove" onclick="window.__removeDom(${i})">×</button></div>`
+    ).join('');
+  }
+  
+  window.__addDom = () => {
+    const input = document.getElementById('sub-dom');
+    const val = parseInt(input.value, 10);
+    if (!val || val < 1 || val > 31) return;
+    if (!window.__subDaysOfMonth) window.__subDaysOfMonth = [];
+    if (!window.__subDaysOfMonth.includes(val)) window.__subDaysOfMonth.push(val);
+    input.value = '';
+    renderDomChips();
+  };
+  
+  window.__removeDom = i => {
+    window.__subDaysOfMonth.splice(i, 1);
+    renderDomChips();
+  };
 
   function renderTimeChips() {
     const el = document.getElementById('time-chips');
@@ -233,15 +292,36 @@
     window.__subTimes.splice(i, 1);
     renderTimeChips();
   };
-  window.__saveSub = async (ref, isDaily) => {
+
+  window.__saveSub = async (ref, kind, scheduleUnit) => {
     let body;
-    if (isDaily) {
+    const isRecurring = kind === 'RECURRING';
+    if (isRecurring) {
       const input = document.getElementById('sub-time');
       if (input && input.value && !window.__subTimes.includes(input.value)) {
         window.__subTimes.push(input.value);
       }
       if (!window.__subTimes || window.__subTimes.length === 0) { toast('Добавь хотя бы одно время'); return; }
-      body = { taskRef: ref, mode: 'daily', times: window.__subTimes };
+      
+      let mode = 'daily';
+      if (scheduleUnit === 'WEEK') {
+          mode = 'weekly';
+          if (!window.__subDaysOfWeek || window.__subDaysOfWeek.length === 0) { toast('Добавь хотя бы один день недели'); return; }
+      } else if (scheduleUnit === 'MONTH') {
+          mode = 'monthly';
+          const domInput = document.getElementById('sub-dom');
+          const domVal = domInput ? parseInt(domInput.value, 10) : 0;
+          if (domVal && !window.__subDaysOfMonth.includes(domVal)) window.__subDaysOfMonth.push(domVal);
+          if (!window.__subDaysOfMonth || window.__subDaysOfMonth.length === 0) { toast('Добавь хотя бы одно число месяца'); return; }
+      }
+      
+      body = { 
+          taskRef: ref, 
+          mode: mode, 
+          times: window.__subTimes,
+          daysOfWeek: window.__subDaysOfWeek,
+          daysOfMonth: window.__subDaysOfMonth
+      };
     } else {
       const date = document.getElementById('sub-date')?.value;
       const time = document.getElementById('sub-dated-time')?.value;

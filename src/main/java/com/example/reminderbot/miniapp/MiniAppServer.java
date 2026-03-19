@@ -178,11 +178,20 @@ public class MiniAppServer {
                     if (body.has("times")) {
                         for (JsonNode t : body.get("times")) times.add(t.asText());
                     }
+                    List<String> daysOfWeek = new ArrayList<>();
+                    if (body.has("daysOfWeek")) {
+                        for (JsonNode d : body.get("daysOfWeek")) daysOfWeek.add(d.asText());
+                    }
+                    List<Integer> daysOfMonth = new ArrayList<>();
+                    if (body.has("daysOfMonth")) {
+                        for (JsonNode d : body.get("daysOfMonth")) daysOfMonth.add(d.asInt());
+                    }
                     yield botService.apiSubscribe(chatId,
                             textNode(body, "taskRef"),
                             mode, times,
                             textNode(body, "date"),
-                            textNode(body, "time"));
+                            textNode(body, "time"),
+                            daysOfWeek, daysOfMonth);
                 }
                 case "/api/unsubscribe" -> {
                     JsonNode body = readJsonBody(exchange);

@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-001-subscription-add-days-lists
+      author: ai
+      changes:
+        - addColumn:
+            tableName: subscriptions
+            columns:
+              - column:
+                  name: days_of_week
+                  type: VARCHAR(255)
+              - column:
+                  name: days_of_month
+                  type: VARCHAR(255)

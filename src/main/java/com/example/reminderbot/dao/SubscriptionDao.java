@@ -20,7 +20,7 @@ public class SubscriptionDao {
         List<Subscription> subscriptions = new ArrayList<>();
         String sql = """
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
-                   s.next_run_at, s.active, s.one_time_done
+                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
             FROM subscriptions s
             WHERE s.active = true
             ORDER BY s.created_at
@@ -30,6 +30,11 @@ public class SubscriptionDao {
                 String id = rs.getString("id");
                 List<String> dailyTimes = loadDailyTimes(conn, id);
                 Timestamp nextRunTs = rs.getTimestamp("next_run_at");
+                String dwsStr = rs.getString("days_of_week");
+                List<String> dws = dwsStr == null || dwsStr.isBlank() ? null : List.of(dwsStr.split(","));
+                String dmsStr = rs.getString("days_of_month");
+                List<Integer> dms = dmsStr == null || dmsStr.isBlank() ? null : java.util.Arrays.stream(dmsStr.split(",")).map(Integer::parseInt).toList();
+
                 subscriptions.add(new Subscription(
                         id,
                         rs.getString("task_id"),
@@ -40,7 +45,9 @@ public class SubscriptionDao {
                         rs.getString("zone_id"),
                         nextRunTs != null ? nextRunTs.toInstant() : null,
                         rs.getBoolean("active"),
-                        rs.getBoolean("one_time_done")
+                        rs.getBoolean("one_time_done"),
+                        dws,
+                        dms
                 ));
             }
         }
@@ -63,8 +70,8 @@ public class SubscriptionDao {
 
     public void upsert(Connection conn, Subscription sub) throws SQLException {
         String sql = """
-            INSERT INTO subscriptions (id, task_id, chat_id, day_of_week, day_of_month, zone_id, next_run_at, active, one_time_done, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO subscriptions (id, task_id, chat_id, day_of_week, day_of_month, zone_id, next_run_at, active, one_time_done, updated_at, days_of_week, days_of_month)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 task_id = EXCLUDED.task_id,
                 chat_id = EXCLUDED.chat_id,
@@ -74,7 +81,9 @@ public class SubscriptionDao {
                 next_run_at = EXCLUDED.next_run_at,
                 active = EXCLUDED.active,
                 one_time_done = EXCLUDED.one_time_done,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = CURRENT_TIMESTAMP,
+                days_of_week = EXCLUDED.days_of_week,
+                days_of_month = EXCLUDED.days_of_month
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, sub.id());
@@ -86,6 +95,8 @@ public class SubscriptionDao {
             ps.setTimestamp(7, sub.nextRunAt() != null ? Timestamp.from(sub.nextRunAt()) : null);
             ps.setBoolean(8, sub.active());
             ps.setBoolean(9, sub.oneTimeDone());
+            ps.setString(10, sub.daysOfWeek() == null || sub.daysOfWeek().isEmpty() ? null : String.join(",", sub.daysOfWeek()));
+            ps.setString(11, sub.daysOfMonth() == null || sub.daysOfMonth().isEmpty() ? null : sub.daysOfMonth().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
             ps.executeUpdate();
         }
 
