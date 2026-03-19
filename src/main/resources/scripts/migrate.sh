@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 : "${BOT_DB_URL:?Missing BOT_DB_URL}"
 : "${BOT_DB_USER:?Missing BOT_DB_USER}"
@@ -14,6 +14,6 @@ exec liquibase \
   --password="${BOT_DB_PASSWORD}" \
   --default-schema-name="${SCHEMA}" \
   --search-path=/liquibase/changelog \
-  --changelog-file=db.changelog-master.yaml \
+  --changelog-file=db/changelog/db.changelog-master.yaml \
   --log-level="${LOG_LEVEL}" \
   update
