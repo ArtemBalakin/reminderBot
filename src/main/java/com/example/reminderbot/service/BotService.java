@@ -178,6 +178,7 @@ public class BotService {
             return;
         }
 
+        String text = message.text() == null ? "" : message.text().trim();
         UserSession session = synchronizedSession(chatId);
         if (session != null && message.document() != null) {
             if (session.type() == SessionType.IMPORT_CATALOG_FILE) {
@@ -189,8 +190,18 @@ public class BotService {
                 return;
             }
         }
-
-        String text = message.text() == null ? "" : message.text().trim();
+        if (session != null && session.type() == SessionType.CHANGE_TASK_SELECT && !text.isBlank() && !text.startsWith("/")) {
+            handleChangeTaskSelectByText(chatId, text);
+            return;
+        }
+        if (session != null && session.type() == SessionType.EDIT_TASK_SELECT && !text.isBlank() && !text.startsWith("/")) {
+            handleEditTaskSelectByText(chatId, text);
+            return;
+        }
+        if (session != null && session.type() == SessionType.EDIT_TASK_VALUE && !text.isBlank() && !text.startsWith("/")) {
+            handleEditTaskValue(chatId, text);
+            return;
+        }
         if (text.equals("/cancel")) {
             clearSession(chatId);
             telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", TelegramClient.removeKeyboard());
@@ -209,6 +220,14 @@ public class BotService {
                 }
                 case NEW_TASK_NOTE -> {
                     handleNewTaskNote(profile, text);
+                    return;
+                }
+                case EDIT_TASK_SELECT -> {
+                    handleEditTaskSelectByText(chatId, text);
+                    return;
+                }
+                case EDIT_TASK_VALUE -> {
+                    handleEditTaskValue(chatId, text);
                     return;
                 }
                 default -> {
@@ -297,6 +316,30 @@ public class BotService {
             telegram.sendMessage(chatId, repingText(chatId));
             return;
         }
+        if (text.equals("/changetask")) {
+            sendChangeTaskMenu(chatId);
+            return;
+        }
+        if (text.startsWith("/changetask ")) {
+            handleChangeTaskStart(chatId, text.substring(12).trim());
+            return;
+        }
+        if (text.equals("/stats")) {
+            telegram.sendMessage(chatId, subscriberStatsText());
+            return;
+        }
+        if (text.equals("/board")) {
+            telegram.sendMessage(chatId, taskBoardText());
+            return;
+        }
+        if (text.equals("/edittask")) {
+            sendEditTaskMenu(chatId);
+            return;
+        }
+        if (text.startsWith("/edittask ")) {
+            handleEditTaskStart(chatId, text.substring(10).trim());
+            return;
+        }
 
         telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.", startKeyboard());
     }
@@ -376,6 +419,27 @@ public class BotService {
             }
             if (data.startsWith("PROMPT_GO:")) {
                 handlePromptGoDoing(callback.id(), data.substring(10), chatId);
+                return;
+            }
+            if (data.startsWith("CHANGE_TASK:")) {
+                handleChangeTaskSelect(chatId, data.substring(12));
+                telegram.answerCallbackQuery(callback.id(), null);
+                return;
+            }
+            if (data.startsWith("CHANGE_TO:")) {
+                String[] parts = data.split(":");
+                handleChangeTaskComplete(callback.id(), chatId, parts[1], parts[2]);
+                return;
+            }
+            if (data.startsWith("EDIT_TASK:")) {
+                handleEditTaskSelect(chatId, data.substring(10));
+                telegram.answerCallbackQuery(callback.id(), null);
+                return;
+            }
+            if (data.startsWith("EDIT_PROP:")) {
+                String[] parts = data.split(":");
+                handleEditTaskProperty(chatId, parts[1], parts[2]);
+                telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
         } catch (Exception e) {
@@ -1171,6 +1235,358 @@ public class BotService {
         return value;
     }
 
+    private void sendChangeTaskMenu(long chatId) {
+        List<Subscription> own = state.subscriptions().stream()
+                .filter(s -> s.chatId() == chatId && s.active())
+                .toList();
+        if (own.isEmpty()) {
+            telegram.sendMessage(chatId, "У тебя пока нет настроек. Открой /tasks и выбери дело.");
+            return;
+        }
+        List<List<Map<String, Object>>> rows = new ArrayList<>();
+        for (Subscription sub : own) {
+            TaskDefinition task = findTask(sub.taskId());
+            if (task == null) continue;
+            rows.add(List.of(TelegramClient.button(task.title(), "CHANGE_TASK:" + sub.id())));
+        }
+        telegram.sendMessage(chatId, "Выбери дело, которое хочешь изменить:", TelegramClient.inlineKeyboard(rows));
+    }
+
+    private void handleChangeTaskStart(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+            return;
+        }
+        Subscription sub = findUserSubscription(chatId, task.id());
+        if (sub == null) {
+            telegram.sendMessage(chatId, "У тебя нет настройки для этого дела.");
+            return;
+        }
+        handleChangeTaskSelect(chatId, sub.id());
+    }
+
+    private void handleChangeTaskSelect(long chatId, String subscriptionId) {
+        Subscription sub = findSubscription(subscriptionId);
+        if (sub == null || sub.chatId() != chatId) {
+            telegram.sendMessage(chatId, "Настройка не найдена.");
+            return;
+        }
+        TaskDefinition oldTask = findTask(sub.taskId());
+        if (oldTask == null) {
+            telegram.sendMessage(chatId, "Старое дело не найдено.");
+            return;
+        }
+        state.sessions().put(chatId, new UserSession(SessionType.CHANGE_TASK_SELECT, Map.of("subscriptionId", subscriptionId), null));
+        saveState();
+        
+        int pageSize = 10;
+        List<TaskDefinition> tasks = catalog.tasks();
+        List<List<Map<String, Object>>> rows = new ArrayList<>();
+        for (int i = 0; i < Math.min(tasks.size(), pageSize); i++) {
+            TaskDefinition task = tasks.get(i);
+            if (task.id().equals(sub.taskId())) continue;
+            rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(task.title()), "CHANGE_TO:" + subscriptionId + ":" + (i + 1))));
+        }
+        telegram.sendMessage(chatId, "Текущее дело: " + oldTask.title() + "\n\nВыбери новое дело или пришли номер дела:", TelegramClient.inlineKeyboard(rows));
+    }
+
+    private void handleChangeTaskSelectByText(long chatId, String text) {
+        UserSession session = synchronizedSession(chatId);
+        if (session == null || session.data().get("subscriptionId") == null) {
+            telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /changetask");
+            return;
+        }
+        String subscriptionId = session.data().get("subscriptionId");
+        handleChangeTaskComplete(null, chatId, subscriptionId, text);
+    }
+
+    private void handleChangeTaskComplete(String callbackId, long chatId, String subscriptionId, String newTaskRef) {
+        synchronized (this) {
+            Subscription sub = findSubscription(subscriptionId);
+            if (sub == null || sub.chatId() != chatId) {
+                if (callbackId != null) telegram.answerCallbackQuery(callbackId, "Настройка не найдена");
+                else telegram.sendMessage(chatId, "Настройка не найдена.");
+                return;
+            }
+            TaskDefinition newTask = resolveTask(newTaskRef);
+            if (newTask == null) {
+                if (callbackId != null) telegram.answerCallbackQuery(callbackId, "Дело не найдено");
+                else telegram.sendMessage(chatId, "Не нашёл дело: " + newTaskRef);
+                return;
+            }
+            
+            TaskDefinition oldTask = findTask(sub.taskId());
+            Subscription updated = new Subscription(
+                    sub.id(),
+                    newTask.id(),
+                    sub.chatId(),
+                    sub.dailyTimes(),
+                    sub.dayOfWeek(),
+                    sub.dayOfMonth(),
+                    sub.zoneId(),
+                    sub.nextRunAt(),
+                    sub.active(),
+                    sub.oneTimeDone()
+            );
+            state.subscriptions().removeIf(s -> s.id().equals(subscriptionId));
+            state.subscriptions().add(updated);
+            state.prompts().removeIf(p -> p.subscriptionId().equals(subscriptionId));
+            state.sessions().remove(chatId);
+            saveState();
+            
+            String message = "✅ Дело изменено\n\n" +
+                    "Было: " + (oldTask != null ? oldTask.title() : sub.taskId()) + "\n" +
+                    "Стало: " + newTask.title() + "\n\n" +
+                    humanSchedule(updated, newTask);
+            if (callbackId != null) {
+                telegram.answerCallbackQuery(callbackId, "Изменено");
+            }
+            telegram.sendMessage(chatId, message, TelegramClient.removeKeyboard());
+        }
+    }
+
+    private String subscriberStatsText() {
+        Map<String, Integer> taskCounts = new HashMap<>();
+        for (Subscription sub : state.subscriptions()) {
+            if (sub.active()) {
+                taskCounts.merge(sub.taskId(), 1, Integer::sum);
+            }
+        }
+        
+        if (taskCounts.isEmpty()) {
+            return "Пока нет активных подписок.";
+        }
+        
+        List<Map.Entry<String, Integer>> sorted = taskCounts.entrySet().stream()
+                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                .toList();
+        
+        StringBuilder sb = new StringBuilder("📊 Статистика подписчиков:\n\n");
+        int maxCount = sorted.get(0).getValue();
+        
+        for (Map.Entry<String, Integer> entry : sorted) {
+            TaskDefinition task = findTask(entry.getKey());
+            String title = task != null ? task.title() : entry.getKey();
+            int count = entry.getValue();
+            int barLength = maxCount > 0 ? (count * 20) / maxCount : 0;
+            String bar = "█".repeat(Math.max(1, barLength));
+            
+            sb.append(title).append("\n");
+            sb.append(bar).append(" ").append(count).append(" чел.\n\n");
+        }
+        
+        sb.append("Всего активных подписок: ").append(state.subscriptions().stream().filter(Subscription::active).count());
+        return sb.toString();
+    }
+
+    private void sendEditTaskMenu(long chatId) {
+        List<TaskDefinition> tasks = catalog.tasks();
+        if (tasks.isEmpty()) {
+            telegram.sendMessage(chatId, "Каталог пуст.");
+            return;
+        }
+        int pageSize = 10;
+        List<List<Map<String, Object>>> rows = new ArrayList<>();
+        for (int i = 0; i < Math.min(tasks.size(), pageSize); i++) {
+            TaskDefinition task = tasks.get(i);
+            rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(task.title()), "EDIT_TASK:" + (i + 1))));
+        }
+        telegram.sendMessage(chatId, "Выбери дело для редактирования или пришли номер:", TelegramClient.inlineKeyboard(rows));
+    }
+
+    private void handleEditTaskStart(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+            return;
+        }
+        handleEditTaskSelect(chatId, String.valueOf(taskNumber(task.id())));
+    }
+
+    private void handleEditTaskSelectByText(long chatId, String text) {
+        handleEditTaskSelect(chatId, text.trim());
+    }
+
+    private void handleEditTaskSelect(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+            return;
+        }
+        
+        state.sessions().put(chatId, new UserSession(SessionType.EDIT_TASK_PROPERTY, Map.of("taskId", task.id()), null));
+        saveState();
+        
+        String info = String.format("""
+Дело: %s
+
+Текущие параметры:
+• Название: %s
+• Тип: %s
+• Интервал: %s
+• Заметка: %s
+
+Что хочешь изменить?
+""", 
+            task.title(),
+            task.title(),
+            humanTaskKind(task.kind()),
+            task.schedule() != null ? (task.schedule().interval() + " " + task.schedule().unit().name().toLowerCase()) : "—",
+            task.note() != null ? task.note() : "нет"
+        );
+        
+        List<List<Map<String, Object>>> rows = List.of(
+            List.of(TelegramClient.button("📝 Название", "EDIT_PROP:" + task.id() + ":title")),
+            List.of(TelegramClient.button("🔢 Интервал", "EDIT_PROP:" + task.id() + ":interval")),
+            List.of(TelegramClient.button("📋 Заметка", "EDIT_PROP:" + task.id() + ":note"))
+        );
+        
+        telegram.sendMessage(chatId, info, TelegramClient.inlineKeyboard(rows));
+    }
+
+    private void handleEditTaskProperty(long chatId, String taskId, String property) {
+        TaskDefinition task = findTask(taskId);
+        if (task == null) {
+            telegram.sendMessage(chatId, "Дело не найдено.");
+            return;
+        }
+        
+        state.sessions().put(chatId, new UserSession(SessionType.EDIT_TASK_VALUE, 
+            Map.of("taskId", taskId, "property", property), null));
+        saveState();
+        
+        String prompt = switch (property) {
+            case "title" -> "Пришли новое название дела:";
+            case "interval" -> {
+                if (task.schedule() == null) {
+                    yield "Это дело без расписания. Нельзя изменить интервал.";
+                }
+                yield "Пришли новый интервал (число). Текущий: " + task.schedule().interval();
+            }
+            case "note" -> "Пришли новую заметку или - для удаления:";
+            default -> "Неизвестное свойство.";
+        };
+        
+        telegram.sendMessage(chatId, prompt);
+    }
+
+    private void handleEditTaskValue(long chatId, String value) {
+        UserSession session = synchronizedSession(chatId);
+        if (session == null || session.data().get("taskId") == null || session.data().get("property") == null) {
+            telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /edittask");
+            return;
+        }
+        
+        String taskId = session.data().get("taskId");
+        String property = session.data().get("property");
+        
+        synchronized (this) {
+            TaskDefinition task = findTask(taskId);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Дело не найдено.");
+                return;
+            }
+            
+            TaskDefinition updated = switch (property) {
+                case "title" -> {
+                    String newTitle = value.trim();
+                    if (newTitle.isBlank()) {
+                        telegram.sendMessage(chatId, "Название не может быть пустым.");
+                        yield null;
+                    }
+                    yield new TaskDefinition(task.id(), newTitle, task.kind(), task.schedule(), task.recommendedSlots(), task.note());
+                }
+                case "interval" -> {
+                    if (task.schedule() == null) {
+                        telegram.sendMessage(chatId, "Это дело без расписания.");
+                        yield null;
+                    }
+                    int newInterval;
+                    try {
+                        newInterval = Integer.parseInt(value.trim());
+                        if (newInterval <= 0) throw new NumberFormatException();
+                    } catch (NumberFormatException e) {
+                        telegram.sendMessage(chatId, "Нужно целое положительное число.");
+                        yield null;
+                    }
+                    yield new TaskDefinition(task.id(), task.title(), task.kind(), 
+                        new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note());
+                }
+                case "note" -> {
+                    String newNote = value.trim().equals("-") ? null : value.trim();
+                    yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(), task.recommendedSlots(), newNote);
+                }
+                default -> {
+                    telegram.sendMessage(chatId, "Неизвестное свойство.");
+                    yield null;
+                }
+            };
+            
+            if (updated != null) {
+                catalog.tasks().removeIf(t -> t.id().equals(taskId));
+                catalog.tasks().add(updated);
+                catalogStore.save(catalog);
+                state.sessions().remove(chatId);
+                saveState();
+                
+                telegram.sendMessage(chatId, "✅ Дело обновлено:\n\n" + updated.title() + "\n" + frequencyText(updated), 
+                    TelegramClient.removeKeyboard());
+            }
+        }
+    }
+
+    private String taskBoardText() {
+        List<TaskDefinition> tasks = catalog.tasks();
+        if (tasks.isEmpty()) {
+            return "Каталог пуст.";
+        }
+        
+        Map<String, List<Subscription>> taskSubs = new HashMap<>();
+        for (Subscription sub : state.subscriptions()) {
+            if (sub.active()) {
+                taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
+            }
+        }
+        
+        List<String> free = new ArrayList<>();
+        List<String> taken = new ArrayList<>();
+        
+        for (TaskDefinition task : tasks) {
+            List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
+            int slots = task.recommendedSlots();
+            
+            if (subs.isEmpty()) {
+                free.add("• " + task.title() + " (0/" + slots + ")");
+            } else if (subs.size() < slots) {
+                String who = subs.stream()
+                        .map(s -> displayUser(s.chatId()).split(" ")[0])
+                        .collect(Collectors.joining(", "));
+                taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") — " + who);
+            } else {
+                String who = subs.stream()
+                        .map(s -> displayUser(s.chatId()).split(" ")[0])
+                        .collect(Collectors.joining(", "));
+                taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") ✅ — " + who);
+            }
+        }
+        
+        StringBuilder sb = new StringBuilder("📋 Доска дел:\n\n");
+        
+        if (!taken.isEmpty()) {
+            sb.append("🔒 Забранные дела:\n");
+            sb.append(String.join("\n", taken));
+            sb.append("\n\n");
+        }
+        
+        if (!free.isEmpty()) {
+            sb.append("🆓 Свободные дела:\n");
+            sb.append(String.join("\n", free));
+        }
+        
+        return sb.toString().strip();
+    }
+
     private void collectTomorrowReminders(Instant now, List<TomorrowReminderAction> out) {
         for (UserProfile profile : new ArrayList<>(state.users().values())) {
             ZoneId zone = ZoneId.of(profile.zoneId());
@@ -1300,10 +1716,14 @@ public class BotService {
 /tasks — каталог дел
 /subs — мои настройки
 /new — добавить новое дело через диалог
+/changetask — изменить дело в своей настройке
+/edittask — редактировать само дело (название, интервал, заметку)
 /import — импорт каталога JSON-файлом
 /importdb — импорт старого state/catalog/export файла в БД
 /exportdb — экспорт БД в JSON
 /today — дела на сегодня у всех пользователей
+/stats — статистика подписчиков по делам
+/board — доска забранных и свободных дел
 /reping — показать/настроить интервал перепинга
 /tz — таймзона
 /cancel — отменить текущий сценарий
@@ -1354,6 +1774,20 @@ public class BotService {
 Интервал перепинга:
 • /reping — показать текущий
 • /reping 10 — сделать перепинг каждые 10 минут
+
+Изменение дела:
+• /changetask — выбрать из своих настроек дело для изменения
+• /changetask 5 — изменить дело по номеру
+• Можно заменить дело, сохранив время и расписание
+
+Статистика и доска:
+• /stats — график подписчиков по каждому делу
+• /board — показать забранные и свободные дела сразу
+
+Редактирование дела:
+• /edittask — выбрать дело для редактирования
+• /edittask 5 — редактировать дело по номеру
+• Можно изменить название, интервал повторения, заметку
 """;
     }
 
