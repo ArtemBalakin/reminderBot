@@ -46,7 +46,7 @@ public class Main {
             catalogStore = new JsonStore<>(Path.of(catalogFile), Catalog.class, Catalog.empty());
         }
 
-        ScheduledExecutorService executor = Executors.newScheduledThreadPool(4);
+        ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
 
         BotService botService = new BotService(telegram, stateStore, catalogStore, ZoneId.of(zone), appBaseUrl);
         MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService);

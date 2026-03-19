@@ -20,6 +20,7 @@ public class MiniAppServer {
     private final HttpServer server;
     private final BotService botService;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final Map<String, byte[]> staticCache = new HashMap<>();
 
     public MiniAppServer(int port, Executor executor, BotService botService) {
         try {
@@ -28,6 +29,11 @@ public class MiniAppServer {
             throw new IllegalStateException("Failed to start mini app server", e);
         }
         this.botService = botService;
+        // pre-cache static resources at startup
+        for (String name : List.of("miniapp.html", "miniapp.css", "miniapp.js")) {
+            byte[] data = loadResource("miniapp/" + name);
+            if (data != null) staticCache.put(name, data);
+        }
         this.server.setExecutor(executor);
         this.server.createContext("/health", this::handleHealth);
         this.server.createContext("/app", this::handleApp);
@@ -52,7 +58,7 @@ public class MiniAppServer {
     // ── SPA entry point ────────────────────────────────────────────────
 
     private void handleApp(HttpExchange exchange) throws IOException {
-        byte[] html = loadResource("miniapp/miniapp.html");
+        byte[] html = staticCache.get("miniapp.html");
         if (html == null) {
             respond(exchange, 404, "text/plain; charset=utf-8", "not found");
             return;
@@ -65,12 +71,11 @@ public class MiniAppServer {
     private void handleStatic(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getPath();
         String file = path.substring("/static/".length());
-        // prevent path traversal
         if (file.contains("..") || file.contains("/") || file.contains("\\")) {
             respond(exchange, 403, "text/plain; charset=utf-8", "forbidden");
             return;
         }
-        byte[] data = loadResource("miniapp/" + file);
+        byte[] data = staticCache.get(file);
         if (data == null) {
             respond(exchange, 404, "text/plain; charset=utf-8", "not found");
             return;
