@@ -233,23 +233,23 @@ public class BotService {
     }
 
     public synchronized Map<String, Object> apiCreateTask(String title, String kindCode, String unit,
-            int interval, String note) {
+            int interval, int slots, String note) {
         String id = slugify(title);
         if (findTask(id) != null) id = id + "-" + shortId().substring(0, 4);
         TaskKind kind;
         ScheduleRule schedule = null;
-        int slots = 1;
+        int finalSlots = Math.max(1, slots);
         switch (kindCode) {
             case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
             case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
             case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
             case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
             case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
-            case "MANUAL" -> { kind = TaskKind.MANUAL; slots = 0; }
+            case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
             default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
         }
         String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
-        TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, slots, cleanNote);
+        TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote);
         catalog.tasks().add(task);
         catalogStore.save(catalog);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -257,6 +257,42 @@ public class BotService {
         result.put("id", task.id());
         result.put("title", task.title());
         result.put("frequency", frequencyText(task));
+        return result;
+    }
+
+    public synchronized Map<String, Object> apiUpdateTask(String taskId, String title, String kindCode,
+            int interval, int slots, String note) {
+        TaskDefinition existing = findTask(taskId);
+        if (existing == null) return Map.of("error", "Дело не найдено");
+        
+        TaskKind kind;
+        ScheduleRule schedule = null;
+        int finalSlots = Math.max(1, slots);
+        switch (kindCode) {
+            case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
+            case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
+            case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
+            case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
+            case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
+            case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
+            default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
+        }
+        
+        String cleanTitle = title != null && !title.isBlank() ? title.trim() : existing.title();
+        String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
+        if (note != null && note.equals("-")) cleanNote = null; // explicit delete
+        else if (note == null) cleanNote = existing.note(); // keep existing
+        
+        TaskDefinition updated = new TaskDefinition(existing.id(), cleanTitle, kind, schedule, finalSlots, cleanNote);
+        
+        catalog.tasks().removeIf(t -> t.id().equals(taskId));
+        catalog.tasks().add(updated);
+        catalogStore.save(catalog);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("id", updated.id());
+        result.put("title", updated.title());
+        result.put("frequency", frequencyText(updated));
         return result;
     }
 

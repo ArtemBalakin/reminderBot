@@ -204,6 +204,17 @@ public class MiniAppServer {
                             textNode(body, "kindCode"),
                             textNode(body, "unit"),
                             body.has("interval") ? body.get("interval").asInt(1) : 1,
+                            body.has("slots") ? body.get("slots").asInt(1) : 1,
+                            textNode(body, "note"));
+                }
+                case "/api/task/update" -> {
+                    JsonNode body = readJsonBody(exchange);
+                    yield botService.apiUpdateTask(
+                            textNode(body, "taskId"),
+                            textNode(body, "title"),
+                            textNode(body, "kindCode"),
+                            body.has("interval") ? body.get("interval").asInt(1) : 1,
+                            body.has("slots") ? body.get("slots").asInt(1) : 1,
                             textNode(body, "note"));
                 }
                 case "/api/task/edit" -> {

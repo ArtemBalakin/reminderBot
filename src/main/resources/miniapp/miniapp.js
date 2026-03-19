@@ -520,6 +520,10 @@
       <label>Интервал повторения</label>
       <input type="number" id="new-interval" class="input" value="1" min="1">
     </div>`;
+    html += `<div id="slots-group" class="input-group">
+      <label>Сколько раз выполнять?</label>
+      <input type="number" id="new-slots" class="input" value="1" min="1">
+    </div>`;
     html += `<div class="input-group">
       <label>Заметка (необязательно)</label>
       <input type="text" id="new-note" class="input" placeholder="Короткая заметка">
@@ -532,11 +536,15 @@
     document.querySelectorAll('.kind-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     window.__selectedKind = btn.dataset.kind;
-    const intGroup = document.getElementById('interval-group');
+    const intGroup = document.getElementById('interval-group') || document.getElementById('edit-interval-group');
+    const slotsGroup = document.getElementById('slots-group') || document.getElementById('edit-slots-group');
     if (['THIS_WEEK', 'NEXT_WEEK', 'MANUAL'].includes(btn.dataset.kind)) {
-      intGroup.style.display = 'none';
+      if (intGroup) intGroup.style.display = 'none';
+      if (slotsGroup && btn.dataset.kind === 'MANUAL') slotsGroup.style.display = 'none';
+      else if (slotsGroup) slotsGroup.style.display = '';
     } else {
-      intGroup.style.display = '';
+      if (intGroup) intGroup.style.display = '';
+      if (slotsGroup) slotsGroup.style.display = '';
     }
   };
   window.__createTask = async () => {
@@ -544,8 +552,9 @@
     if (!title) { toast('Введи название'); return; }
     const kind = window.__selectedKind || 'DAY';
     const interval = parseInt(document.getElementById('new-interval')?.value, 10) || 1;
+    const slots = parseInt(document.getElementById('new-slots')?.value, 10) || 1;
     const note = document.getElementById('new-note')?.value?.trim() || null;
-    const r = await api('/api/task/new', { title, kindCode: kind, unit: kind, interval, note });
+    const r = await api('/api/task/new', { title, kindCode: kind, unit: kind, interval, slots, note });
     if (r.error) { toast(r.error); return; }
     toast('✅ Добавлено: ' + r.title);
     goBack();
@@ -556,43 +565,65 @@
     const data = await api('/api/task?ref=' + encodeURIComponent(params.taskId));
     if (data.error) { app.innerHTML = backRow() + `<div class="empty"><div class="empty-text">${esc(data.error)}</div></div>`; return; }
 
+    const kindMap = {
+      RECURRING: data.scheduleUnit,
+      ONE_TIME_THIS_WEEK: 'THIS_WEEK',
+      ONE_TIME_NEXT_WEEK: 'NEXT_WEEK',
+      MANUAL: 'MANUAL'
+    };
+    const currentKind = kindMap[data.kind] || 'DAY';
+    window.__selectedKind = currentKind;
+
     let html = backRow();
     html += `<div class="page-header">Редактировать: ${esc(data.title)}</div>`;
     html += `<div class="input-group">
       <label>Название</label>
       <input type="text" id="edit-title" class="input" value="${esc(data.title)}">
     </div>`;
-    if (data.scheduleInterval) {
-      html += `<div class="input-group">
-        <label>Интервал</label>
-        <input type="number" id="edit-interval" class="input" value="${data.scheduleInterval}" min="1">
-      </div>`;
-    }
+    
+    html += `<div class="input-group">
+      <label>Тип</label>
+      <div class="select-grid">
+        <button class="btn btn-secondary kind-btn ${currentKind === 'DAY' ? 'active' : ''}" data-kind="DAY" onclick="window.__selectKind(this)">Каждый N день</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'WEEK' ? 'active' : ''}" data-kind="WEEK" onclick="window.__selectKind(this)">Каждую N нед.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'MONTH' ? 'active' : ''}" data-kind="MONTH" onclick="window.__selectKind(this)">Каждый N мес.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'THIS_WEEK' ? 'active' : ''}" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">Разово на этой</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'NEXT_WEEK' ? 'active' : ''}" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">Разово на след.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'MANUAL' ? 'active' : ''}" data-kind="MANUAL" onclick="window.__selectKind(this)">Ручное</button>
+      </div>
+    </div>`;
+
+    html += `<div id="edit-interval-group" class="input-group" style="display: ${['THIS_WEEK', 'NEXT_WEEK', 'MANUAL'].includes(currentKind) ? 'none' : ''}">
+      <label>Интервал повторения</label>
+      <input type="number" id="edit-interval" class="input" value="${data.scheduleInterval || 1}" min="1">
+    </div>`;
+
+    html += `<div id="edit-slots-group" class="input-group" style="display: ${currentKind === 'MANUAL' ? 'none' : ''}">
+      <label>Сколько раз выполнять?</label>
+      <input type="number" id="edit-slots" class="input" value="${data.recommendedSlots || 1}" min="1">
+    </div>`;
+
     html += `<div class="input-group">
       <label>Заметка</label>
       <input type="text" id="edit-note" class="input" value="${esc(data.note || '')}" placeholder="Заметка или - для удаления">
     </div>`;
-    html += `<button class="btn btn-primary" onclick="window.__saveEdit('${esc(data.id)}', ${!!data.scheduleInterval})">Сохранить</button>`;
+    html += `<button class="btn btn-primary" onclick="window.__saveEdit('${esc(data.id)}')">Сохранить</button>`;
     app.innerHTML = html;
   }
-  window.__saveEdit = async (taskId, hasInterval) => {
+  
+  window.__saveEdit = async (taskId) => {
     const title = document.getElementById('edit-title')?.value?.trim();
-    const note = document.getElementById('edit-note')?.value?.trim();
-    const interval = hasInterval ? document.getElementById('edit-interval')?.value?.trim() : null;
-    let ok = true;
-    if (title) {
-      const r = await api('/api/task/edit', { taskId, property: 'title', value: title });
-      if (r.error) { toast(r.error); ok = false; }
-    }
-    if (note !== undefined) {
-      const r = await api('/api/task/edit', { taskId, property: 'note', value: note || '-' });
-      if (r.error) { toast(r.error); ok = false; }
-    }
-    if (interval) {
-      const r = await api('/api/task/edit', { taskId, property: 'interval', value: interval });
-      if (r.error) { toast(r.error); ok = false; }
-    }
-    if (ok) toast('✅ Дело обновлено');
+    if (!title) { toast('Введи название'); return; }
+    
+    const kind = window.__selectedKind || 'DAY';
+    const interval = parseInt(document.getElementById('edit-interval')?.value, 10) || 1;
+    const slots = parseInt(document.getElementById('edit-slots')?.value, 10) || 1;
+    const note = document.getElementById('edit-note')?.value?.trim() || '-';
+    
+    const r = await api('/api/task/update', { taskId, title, kindCode: kind, interval, slots, note });
+    if (r.error) { toast(r.error); return; }
+    
+    toast('✅ Дело обновлено');
     goBack();
   };
 
