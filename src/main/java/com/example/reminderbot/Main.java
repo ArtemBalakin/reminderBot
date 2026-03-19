@@ -1,12 +1,14 @@
 package com.example.reminderbot;
 
+import com.example.reminderbot.dao.ConnectionPool;
 import com.example.reminderbot.miniapp.MiniAppServer;
 import com.example.reminderbot.model.BotState;
 import com.example.reminderbot.model.Catalog;
 import com.example.reminderbot.poller.UpdatePoller;
 import com.example.reminderbot.service.BotService;
+import com.example.reminderbot.storage.DatabaseCatalogStore;
+import com.example.reminderbot.storage.DatabaseStore;
 import com.example.reminderbot.storage.JsonStore;
-import com.example.reminderbot.storage.PostgresStore;
 import com.example.reminderbot.storage.Store;
 import com.example.reminderbot.telegram.TelegramClient;
 
@@ -28,14 +30,17 @@ public class Main {
         TelegramClient telegram = new TelegramClient(token);
         Store<BotState> stateStore;
         Store<Catalog> catalogStore;
+        ConnectionPool connectionPool = null;
 
         String jdbcUrl = resolveJdbcUrl();
         if (jdbcUrl != null) {
             String dbUser = envAny("BOT_DB_USER", "PGUSER", "USERNAME");
             String dbPassword = envAny("BOT_DB_PASSWORD", "PGPASSWORD", "PASSWORD");
             String dbSchema = env("BOT_DB_SCHEMA", "public");
-            stateStore = new PostgresStore<>(jdbcUrl, dbUser, dbPassword, dbSchema, "bot_state", BotState.class, BotState.empty());
-            catalogStore = new PostgresStore<>(jdbcUrl, dbUser, dbPassword, dbSchema, "catalog", Catalog.class, Catalog.empty());
+            connectionPool = new ConnectionPool(jdbcUrl, dbUser, dbPassword, dbSchema);
+            DatabaseStore databaseStore = new DatabaseStore(connectionPool.getDataSource());
+            stateStore = databaseStore;
+            catalogStore = new DatabaseCatalogStore(databaseStore);
         } else {
             stateStore = new JsonStore<>(Path.of(stateFile), BotState.class, BotState.empty());
             catalogStore = new JsonStore<>(Path.of(catalogFile), Catalog.class, Catalog.empty());
@@ -49,12 +54,25 @@ public class Main {
         executor.submit(new UpdatePoller(telegram, botService));
         executor.scheduleWithFixedDelay(botService::processDueItems, 5, 30, TimeUnit.SECONDS);
 
+        ConnectionPool finalPool = connectionPool;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Shutting down gracefully...");
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+            }
             miniAppServer.stop(0);
-            executor.shutdownNow();
+            if (finalPool != null) {
+                finalPool.close();
+            }
+            System.out.println("Shutdown complete.");
         }));
 
-        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + (jdbcUrl != null ? ", storage=postgres" : ", storage=json"));
+        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + (jdbcUrl != null ? ", storage=database" : ", storage=json"));
     }
 
     private static String resolveJdbcUrl() {
