@@ -22,6 +22,7 @@ public class CompletionDao {
             FROM completion_records
             WHERE completed_at > CURRENT_TIMESTAMP - INTERVAL '14 days'
             ORDER BY completed_at DESC
+            LIMIT 500
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {

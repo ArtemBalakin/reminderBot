@@ -15,15 +15,7 @@ ENV PORT=8080 \
     APP_PORT=8080 \
     BOT_ZONE=Asia/Almaty \
     BOT_STATE_FILE=/app/data/state.json \
-    BOT_CATALOG_FILE=/app/data/catalog.json
+    BOT_CATALOG_FILE=/app/data/catalog.json \
+    JAVA_TOOL_OPTIONS="-Xmx100m -Xms48m -Xss256k -XX:+UseSerialGC -XX:MaxMetaspaceSize=48m -XX:TieredStopAtLevel=1 -Dfile.encoding=UTF-8"
 EXPOSE 8080
-ENTRYPOINT ["java", \
-  "-Xmx128m", \
-  "-Xms64m", \
-  "-Xss256k", \
-  "-XX:+UseSerialGC", \
-  "-XX:MaxMetaspaceSize=48m", \
-  "-XX:+TieredCompilation", \
-  "-XX:TieredStopAtLevel=1", \
-  "-Xverify:none", \
-  "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
