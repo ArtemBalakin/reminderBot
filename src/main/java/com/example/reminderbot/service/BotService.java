@@ -114,8 +114,10 @@ public class BotService {
                         ZoneId.of(own.zoneId())).format(DATE_TIME_FMT));
             }
             if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
-            if (own.dayOfWeek() != null) sub.put("dayOfWeek", own.dayOfWeek());
-            if (own.dayOfMonth() != null) sub.put("dayOfMonth", own.dayOfMonth());
+            if (own.daysOfWeek() != null) sub.put("daysOfWeek", own.daysOfWeek());
+            else if (own.dayOfWeek() != null) sub.put("dayOfWeek", own.dayOfWeek());
+            if (own.daysOfMonth() != null) sub.put("daysOfMonth", own.daysOfMonth());
+            else if (own.dayOfMonth() != null) sub.put("dayOfMonth", own.dayOfMonth());
             result.put("mySubscription", sub);
         }
         return result;
@@ -380,6 +382,14 @@ public class BotService {
         return Map.of("sections", sections);
     }
 
+    private int calcSubSlots(Subscription sub) {
+        int times = sub.dailyTimes() == null || sub.dailyTimes().isEmpty() ? 1 : sub.dailyTimes().size();
+        int days = 1;
+        if (sub.daysOfWeek() != null && !sub.daysOfWeek().isEmpty()) days = sub.daysOfWeek().size();
+        else if (sub.daysOfMonth() != null && !sub.daysOfMonth().isEmpty()) days = sub.daysOfMonth().size();
+        return times * days;
+    }
+
     public synchronized Map<String, Object> apiGetBoard() {
         List<Map<String, Object>> free = new ArrayList<>();
         List<Map<String, Object>> taken = new ArrayList<>();
@@ -389,13 +399,14 @@ public class BotService {
         }
         for (TaskDefinition task : catalog.tasks()) {
             List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
+            int takenSlots = subs.stream().mapToInt(this::calcSubSlots).sum();
             int slots = task.recommendedSlots();
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", task.id());
             item.put("title", task.title());
-            item.put("count", subs.size());
+            item.put("count", takenSlots);
             item.put("slots", slots);
-            item.put("full", subs.size() >= slots);
+            item.put("full", takenSlots >= slots);
             if (!subs.isEmpty()) {
                 item.put("users", subs.stream().map(s -> displayUser(s.chatId())).toList());
                 taken.add(item);
@@ -409,7 +420,7 @@ public class BotService {
     public synchronized Map<String, Object> apiGetStats() {
         Map<String, Integer> taskCounts = new HashMap<>();
         for (Subscription sub : state.subscriptions()) {
-            if (sub.active()) taskCounts.merge(sub.taskId(), 1, Integer::sum);
+            if (sub.active()) taskCounts.merge(sub.taskId(), calcSubSlots(sub), Integer::sum);
         }
         List<Map<String, Object>> items = taskCounts.entrySet().stream()
                 .sorted((a, b) -> b.getValue().compareTo(a.getValue()))

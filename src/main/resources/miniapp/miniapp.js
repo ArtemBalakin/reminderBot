@@ -150,13 +150,13 @@
 
     if (!data.isManual) {
       html += `<div class="btn-row">`;
-      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.number}')">🗓 ${data.mySubscription ? 'Изменить' : 'Подписаться'}</button>`;
+      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.number}')">🗓 ${data.mySubscription ? 'Изменить моё расписание' : 'Моё расписание'}</button>`;
       if (data.mySubscription) {
         html += `<button class="btn btn-danger btn-sm" onclick="window.__unsub('${data.number}')">Отписаться</button>`;
       }
       html += `</div>`;
     }
-    html += `<button class="btn btn-secondary" style="margin-top:8px" onclick="window.__editTask('${esc(data.id)}')">✏️ Редактировать</button>`;
+    html += `<button class="btn btn-secondary" style="margin-top:8px" onclick="window.__editTask('${esc(data.id)}')">✏️ Настройки дела</button>`;
     app.innerHTML = html;
   }
   window.__subscribe = ref => pushPage('subscribe', { ref });
@@ -575,7 +575,7 @@
     window.__selectedKind = currentKind;
 
     let html = backRow();
-    html += `<div class="page-header">Редактировать: ${esc(data.title)}</div>`;
+    html += `<div class="page-header">Настройки: ${esc(data.title)}</div>`;
     html += `<div class="input-group">
       <label>Название</label>
       <input type="text" id="edit-title" class="input" value="${esc(data.title)}">
