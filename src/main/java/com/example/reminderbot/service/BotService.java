@@ -61,6 +61,315 @@ public class BotService {
         saveState();
     }
 
+    // ── MiniApp API methods ────────────────────────────────────────────
+
+    public synchronized Map<String, Object> apiGetTasksPage(int page) {
+        List<TaskDefinition> tasks = catalog.tasks();
+        int pageSize = 6;
+        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+        int safePage = Math.max(0, Math.min(page, totalPages - 1));
+        int from = safePage * pageSize;
+        int to = Math.min(tasks.size(), from + pageSize);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (int i = from; i < to; i++) {
+            TaskDefinition t = tasks.get(i);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("number", i + 1);
+            m.put("id", t.id());
+            m.put("title", t.title());
+            m.put("kind", t.kind().name());
+            m.put("frequency", frequencyText(t));
+            items.add(m);
+        }
+        return Map.of("tasks", items, "page", safePage, "totalPages", totalPages, "total", tasks.size());
+    }
+
+    public synchronized Map<String, Object> apiGetTaskCard(long chatId, String ref) {
+        TaskDefinition task = resolveTask(ref);
+        if (task == null) return Map.of("error", "Не нашёл дело: " + ref);
+        long subscribers = state.subscriptions().stream()
+                .filter(s -> s.taskId().equals(task.id()) && s.active()).count();
+        Subscription own = findUserSubscription(chatId, task.id());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", task.id());
+        result.put("number", taskNumber(task.id()));
+        result.put("title", task.title());
+        result.put("kind", task.kind().name());
+        result.put("kindHuman", humanTaskKind(task.kind()));
+        result.put("frequency", frequencyText(task));
+        result.put("subscribers", subscribers);
+        result.put("note", task.note());
+        result.put("isManual", task.kind() == TaskKind.MANUAL);
+        result.put("recommendedSlots", task.recommendedSlots());
+        if (task.schedule() != null) {
+            result.put("scheduleUnit", task.schedule().unit().name());
+            result.put("scheduleInterval", task.schedule().interval());
+        }
+        if (own != null) {
+            Map<String, Object> sub = new LinkedHashMap<>();
+            sub.put("id", own.id());
+            sub.put("schedule", humanSchedule(own, task));
+            if (own.nextRunAt() != null) {
+                sub.put("nextRunAt", ZonedDateTime.ofInstant(own.nextRunAt(),
+                        ZoneId.of(own.zoneId())).format(DATE_TIME_FMT));
+            }
+            if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
+            if (own.dayOfWeek() != null) sub.put("dayOfWeek", own.dayOfWeek());
+            if (own.dayOfMonth() != null) sub.put("dayOfMonth", own.dayOfMonth());
+            result.put("mySubscription", sub);
+        }
+        return result;
+    }
+
+    public synchronized List<Map<String, Object>> apiGetSubscriptions(long chatId) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Subscription sub : state.subscriptions()) {
+            if (sub.chatId() != chatId || !sub.active()) continue;
+            TaskDefinition task = findTask(sub.taskId());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("subscriptionId", sub.id());
+            m.put("taskId", sub.taskId());
+            m.put("taskTitle", task != null ? task.title() : sub.taskId());
+            m.put("schedule", task != null ? humanSchedule(sub, task) : "");
+            if (sub.nextRunAt() != null) {
+                m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
+                        ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT));
+            }
+            result.add(m);
+        }
+        return result;
+    }
+
+    public synchronized Map<String, Object> apiGetSettings(long chatId) {
+        UserProfile profile = synchronizedProfile(chatId);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("chatId", chatId);
+        m.put("username", profile.username());
+        m.put("firstName", profile.firstName());
+        m.put("zoneId", profile.zoneId());
+        m.put("alertsEnabled", profile.alertsEnabled());
+        m.put("repingMinutes", normalizeRepingMinutes(profile.repingMinutes()));
+        return m;
+    }
+
+    public synchronized void apiUpdateSettings(long chatId, String zoneId, Boolean alertsEnabled,
+            Integer repingMinutes) {
+        UserProfile old = synchronizedProfile(chatId);
+        String newZone = old.zoneId();
+        if (zoneId != null && !zoneId.isBlank()) {
+            ZoneId.of(zoneId); // validate
+            newZone = zoneId;
+        }
+        boolean newAlerts = alertsEnabled != null ? alertsEnabled : old.alertsEnabled();
+        int newReping = repingMinutes != null && repingMinutes >= 1 && repingMinutes <= 180
+                ? repingMinutes : normalizeRepingMinutes(old.repingMinutes());
+        state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(),
+                newZone, newAlerts, newReping, old.lastTomorrowReminderForDate()));
+        saveState();
+    }
+
+    public synchronized Map<String, Object> apiSubscribe(long chatId, String taskRef, String mode,
+            List<String> times, String dateStr, String timeStr) {
+        TaskDefinition task = resolveTask(taskRef);
+        if (task == null) return Map.of("error", "Дело не найдено");
+        if (task.kind() == TaskKind.MANUAL) return Map.of("error", "Ручное дело без расписания");
+        UserProfile profile = synchronizedProfile(chatId);
+        if (profile.username() == null) {
+            profile = new UserProfile(chatId, null, profile.firstName(),
+                    profile.zoneId(), profile.alertsEnabled(),
+                    normalizeRepingMinutes(profile.repingMinutes()), profile.lastTomorrowReminderForDate());
+            state.users().put(chatId, profile);
+        }
+        Subscription updated;
+        if ("daily".equals(mode)) {
+            List<String> parsed = times.stream()
+                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+            updated = buildDailySubscription(profile, task, new ArrayList<>(parsed));
+        } else {
+            LocalDate date = LocalDate.parse(dateStr);
+            LocalTime time = parseTime(timeStr);
+            updated = buildDatedSubscription(profile, task, date, time);
+        }
+        replaceSubscription(updated);
+        saveState();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("taskTitle", task.title());
+        result.put("schedule", humanSchedule(updated, task));
+        if (updated.nextRunAt() != null) {
+            result.put("nextRunAt", ZonedDateTime.ofInstant(updated.nextRunAt(),
+                    ZoneId.of(updated.zoneId())).format(DATE_TIME_FMT));
+        }
+        return result;
+    }
+
+    public synchronized Map<String, Object> apiUnsubscribe(long chatId, String taskRef) {
+        TaskDefinition task = resolveTask(taskRef);
+        if (task == null) return Map.of("error", "Дело не найдено");
+        boolean removed = state.subscriptions().removeIf(
+                s -> s.chatId() == chatId && s.taskId().equals(task.id()));
+        state.prompts().removeIf(p -> p.chatId() == chatId && p.taskId().equals(task.id()));
+        saveState();
+        return Map.of("ok", removed, "taskTitle", task.title());
+    }
+
+    public synchronized Map<String, Object> apiCreateTask(String title, String kindCode, String unit,
+            int interval, String note) {
+        String id = slugify(title);
+        if (findTask(id) != null) id = id + "-" + shortId().substring(0, 4);
+        TaskKind kind;
+        ScheduleRule schedule = null;
+        int slots = 1;
+        switch (kindCode) {
+            case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
+            case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
+            case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
+            case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
+            case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
+            case "MANUAL" -> { kind = TaskKind.MANUAL; slots = 0; }
+            default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
+        }
+        String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
+        TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, slots, cleanNote);
+        catalog.tasks().add(task);
+        catalogStore.save(catalog);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("id", task.id());
+        result.put("title", task.title());
+        result.put("frequency", frequencyText(task));
+        return result;
+    }
+
+    public synchronized Map<String, Object> apiEditTask(String taskId, String property, String value) {
+        TaskDefinition task = findTask(taskId);
+        if (task == null) return Map.of("error", "Дело не найдено");
+        TaskDefinition updated = switch (property) {
+            case "title" -> {
+                if (value == null || value.isBlank()) yield null;
+                yield new TaskDefinition(task.id(), value.trim(), task.kind(), task.schedule(),
+                        task.recommendedSlots(), task.note());
+            }
+            case "interval" -> {
+                if (task.schedule() == null) yield null;
+                int newInterval;
+                try { newInterval = Integer.parseInt(value.trim()); if (newInterval <= 0) throw new NumberFormatException(); }
+                catch (NumberFormatException e) { yield null; }
+                yield new TaskDefinition(task.id(), task.title(), task.kind(),
+                        new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note());
+            }
+            case "note" -> {
+                String newNote = value != null && !value.trim().equals("-") && !value.isBlank() ? value.trim() : null;
+                yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(),
+                        task.recommendedSlots(), newNote);
+            }
+            default -> null;
+        };
+        if (updated == null) return Map.of("error", "Не удалось обновить свойство " + property);
+        catalog.tasks().removeIf(t -> t.id().equals(taskId));
+        catalog.tasks().add(updated);
+        catalogStore.save(catalog);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("id", updated.id());
+        result.put("title", updated.title());
+        result.put("frequency", frequencyText(updated));
+        return result;
+    }
+
+    public synchronized Map<String, Object> apiGetTodayBoard() {
+        Instant now = Instant.now();
+        List<Map<String, Object>> sections = new ArrayList<>();
+        List<UserProfile> users = new ArrayList<>(state.users().values()).stream()
+                .sorted(Comparator.comparing(this::displayNameForSort)).toList();
+        for (UserProfile profile : users) {
+            ZoneId zone = ZoneId.of(profile.zoneId());
+            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Subscription sub : state.subscriptions()) {
+                if (sub.chatId() != profile.chatId() || !sub.active()) continue;
+                TaskDefinition task = findTask(sub.taskId());
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                ActivePrompt prompt = findTodayPrompt(sub.id(), today, zone);
+                List<CompletionRecord> done = findTodayCompletions(sub.id(), today, zone);
+                boolean hasTodayFuture = sub.nextRunAt() != null
+                        && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
+                if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
+                String status;
+                if (prompt != null) {
+                    status = switch (prompt.state()) {
+                        case "SNOOZED" -> "отложено";
+                        case "GOING_DOING_DELAY" -> "пошёл делать";
+                        case "CHECK_WAITING" -> "ждёт подтверждения";
+                        default -> "ждёт ответа";
+                    };
+                } else if (!done.isEmpty()) {
+                    status = "сделано";
+                } else {
+                    status = "запланировано на " + DATE_TIME_FMT.format(
+                            ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskTitle", task.title());
+                row.put("status", status);
+                row.put("done", !done.isEmpty() && prompt == null);
+                rows.add(row);
+            }
+            if (!rows.isEmpty()) {
+                Map<String, Object> section = new LinkedHashMap<>();
+                section.put("user", displayUser(profile.chatId()));
+                section.put("tasks", rows);
+                sections.add(section);
+            }
+        }
+        return Map.of("sections", sections);
+    }
+
+    public synchronized Map<String, Object> apiGetBoard() {
+        List<Map<String, Object>> free = new ArrayList<>();
+        List<Map<String, Object>> taken = new ArrayList<>();
+        Map<String, List<Subscription>> taskSubs = new HashMap<>();
+        for (Subscription sub : state.subscriptions()) {
+            if (sub.active()) taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
+        }
+        for (TaskDefinition task : catalog.tasks()) {
+            List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
+            int slots = task.recommendedSlots();
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", task.id());
+            item.put("title", task.title());
+            item.put("count", subs.size());
+            item.put("slots", slots);
+            item.put("full", subs.size() >= slots);
+            if (!subs.isEmpty()) {
+                item.put("users", subs.stream().map(s -> displayUser(s.chatId())).toList());
+                taken.add(item);
+            } else {
+                free.add(item);
+            }
+        }
+        return Map.of("free", free, "taken", taken);
+    }
+
+    public synchronized Map<String, Object> apiGetStats() {
+        Map<String, Integer> taskCounts = new HashMap<>();
+        for (Subscription sub : state.subscriptions()) {
+            if (sub.active()) taskCounts.merge(sub.taskId(), 1, Integer::sum);
+        }
+        List<Map<String, Object>> items = taskCounts.entrySet().stream()
+                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                .map(e -> {
+                    TaskDefinition task = findTask(e.getKey());
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("taskTitle", task != null ? task.title() : e.getKey());
+                    m.put("count", e.getValue());
+                    return m;
+                }).toList();
+        long totalActive = state.subscriptions().stream().filter(Subscription::active).count();
+        return Map.of("items", items, "totalActive", totalActive);
+    }
+
     public void handleUpdate(TelegramClient.Update update) {
         if (update.callbackQuery() != null) {
             handleCallback(update.callbackQuery());
@@ -369,7 +678,14 @@ public class BotService {
         String data = callback.data() == null ? "" : callback.data();
         try {
             if (data.startsWith("TASK_PAGE:")) {
-                sendTasksPage(chatId, Integer.parseInt(data.substring(10)));
+                sendTasksPage(chatId, Integer.parseInt(data.substring(10)),
+                        callback.message() != null ? callback.message().messageId() : null);
+                telegram.answerCallbackQuery(callback.id(), null);
+                return;
+            }
+            if (data.startsWith("EDIT_TASK_PAGE:")) {
+                sendEditTaskMenu(chatId, Integer.parseInt(data.substring(15)),
+                        callback.message() != null ? callback.message().messageId() : null);
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
@@ -751,6 +1067,10 @@ public class BotService {
     }
 
     private void sendTasksPage(long chatId, int page) {
+        sendTasksPage(chatId, page, null);
+    }
+
+    private void sendTasksPage(long chatId, int page, Integer messageId) {
         List<TaskDefinition> tasks = catalog.tasks();
         if (tasks.isEmpty()) {
             telegram.sendMessage(chatId, "Каталог пуст. Пришли файл через /import или создай дело через /new.");
@@ -781,7 +1101,12 @@ public class BotService {
             nav.add(TelegramClient.button("▶️", "TASK_PAGE:" + (safePage + 1)));
         if (!nav.isEmpty())
             rows.add(nav);
-        telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        
+        if (messageId != null) {
+            telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        } else {
+            telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        }
     }
 
     private void showTaskCard(long chatId, String ref) {
@@ -818,7 +1143,9 @@ public class BotService {
             if (own != null)
                 rows.add(List.of(TelegramClient.button("Удалить мою настройку", "UNSUB:" + taskNumber(task.id()))));
         }
-        rows.add(List.of(TelegramClient.button("Кто подписан", "WHO:" + taskNumber(task.id()))));
+        rows.add(List.of(
+                TelegramClient.button("Кто подписан", "WHO:" + taskNumber(task.id())),
+                TelegramClient.button("✏️ Редактировать", "EDIT_TASK:" + taskNumber(task.id()))));
         telegram.sendMessage(chatId, text.strip(), TelegramClient.inlineKeyboard(rows));
     }
 
@@ -1511,19 +1838,43 @@ public class BotService {
     }
 
     private void sendEditTaskMenu(long chatId) {
+        sendEditTaskMenu(chatId, 0, null);
+    }
+
+    private void sendEditTaskMenu(long chatId, int page, Integer messageId) {
         List<TaskDefinition> tasks = catalog.tasks();
         if (tasks.isEmpty()) {
             telegram.sendMessage(chatId, "Каталог пуст.");
             return;
         }
-        int pageSize = 10;
+        int pageSize = 6;
+        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+        int safePage = Math.max(0, Math.min(page, totalPages - 1));
+        int from = safePage * pageSize;
+        int to = Math.min(tasks.size(), from + pageSize);
+        
+        StringBuilder sb = new StringBuilder("Редактирование дел — страница ").append(safePage + 1).append("/").append(totalPages)
+                .append("\n\nВыбери дело для редактирования или пришли номер:");
+        
         List<List<Map<String, Object>>> rows = new ArrayList<>();
-        for (int i = 0; i < Math.min(tasks.size(), pageSize); i++) {
+        for (int i = from; i < to; i++) {
             TaskDefinition task = tasks.get(i);
             rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(task.title()), "EDIT_TASK:" + (i + 1))));
         }
-        telegram.sendMessage(chatId, "Выбери дело для редактирования или пришли номер:",
-                TelegramClient.inlineKeyboard(rows));
+        
+        List<Map<String, Object>> nav = new ArrayList<>();
+        if (safePage > 0)
+            nav.add(TelegramClient.button("◀️", "EDIT_TASK_PAGE:" + (safePage - 1)));
+        if (safePage < totalPages - 1)
+            nav.add(TelegramClient.button("▶️", "EDIT_TASK_PAGE:" + (safePage + 1)));
+        if (!nav.isEmpty())
+            rows.add(nav);
+        
+        if (messageId != null) {
+            telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        } else {
+            telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        }
     }
 
     private void handleEditTaskStart(long chatId, String ref) {

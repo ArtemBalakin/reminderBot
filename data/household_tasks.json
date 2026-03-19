@@ -1,0 +1,240 @@
+{
+  "tasks": [
+    {
+      "id": "kitchen-floor",
+      "title": "Мыть пол на кухне",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "apartment-floor",
+      "title": "Мыть пол в квартире",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 3
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-windows",
+      "title": "Мыть окна",
+      "kind": "ONE_TIME_NEXT_WEEK",
+      "schedule": null,
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-mirrors",
+      "title": "Мыть зеркала",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 2,
+      "note": null
+    },
+    {
+      "id": "wipe-kitchen-facades",
+      "title": "Протирать фасады кухни + холодильник + фартук кухни",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "clean-bathroom-sinks",
+      "title": "Ванная и раковины (2 шт)",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wipe-washer-top",
+      "title": "Протирать верх стиралки",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "DAY",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "clean-oven-glass",
+      "title": "Мыть стекла духовки+внутри",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 8
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-hallway-facade",
+      "title": "Мыть фасад в прихожей",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-entrance-door",
+      "title": "Мыть входную дверь",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 4
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-doormat-tray",
+      "title": "Мыть коврик+корыто",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "dust-surfaces",
+      "title": "Вытирать пыль с подоконников + кровать (планка и все ячейки) + на пенале в ванной + под телевизором + в прихожей (где ключи и шапки)",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 3
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "clean-toilet",
+      "title": "Мыть унитаз + углы",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "water-plants",
+      "title": "Поливать цветы",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wipe-stove-countertop",
+      "title": "Протирать плиту + со столешницу",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "DAY",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wipe-kitchen-table",
+      "title": "Вытирать со стола на кухне",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "DAY",
+        "interval": 1
+      },
+      "recommendedSlots": 3,
+      "note": null
+    },
+    {
+      "id": "refill-supplies",
+      "title": "Пополнять бумагу, мыло, средства",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-hood",
+      "title": "Мыть вытяжку",
+      "kind": "ONE_TIME_THIS_WEEK",
+      "schedule": null,
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "wash-blue-cloth",
+      "title": "Мыть синюю тряпку",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": null
+    },
+    {
+      "id": "washing-machine",
+      "title": "Стиралка",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 4,
+      "note": "Запуск + развешивать"
+    },
+    {
+      "id": "robot-vacuum",
+      "title": "Робот-пылесос",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "WEEK",
+        "interval": 1
+      },
+      "recommendedSlots": 5,
+      "note": "Подготовка + запуск + поднять все с пола"
+    },
+    {
+      "id": "dishwasher",
+      "title": "Посудомойка",
+      "kind": "RECURRING",
+      "schedule": {
+        "unit": "DAY",
+        "interval": 1
+      },
+      "recommendedSlots": 1,
+      "note": "Запуск + разбор"
+    }
+  ]
+}

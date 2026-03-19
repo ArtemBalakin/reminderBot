@@ -37,8 +37,7 @@ public class TelegramClient {
         Map<String, Object> body = Map.of(
                 "offset", offset,
                 "timeout", timeoutSeconds,
-                "allowed_updates", List.of("message", "callback_query")
-        );
+                "allowed_updates", List.of("message", "callback_query"));
         JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Update[].class);
         ApiResponse<Update[]> response = post("getUpdates", body, type);
         if (!response.ok()) {
@@ -116,7 +115,8 @@ public class TelegramClient {
     public boolean deleteMessage(long chatId, int messageId) {
         try {
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Boolean.class);
-            ApiResponse<Boolean> response = post("deleteMessage", Map.of("chat_id", chatId, "message_id", messageId), type);
+            ApiResponse<Boolean> response = post("deleteMessage", Map.of("chat_id", chatId, "message_id", messageId),
+                    type);
             return response.ok();
         } catch (Exception e) {
             return false;
@@ -129,10 +129,31 @@ public class TelegramClient {
             post("editMessageReplyMarkup", Map.of(
                     "chat_id", chatId,
                     "message_id", messageId,
-                    "reply_markup", replyMarkup == null ? Map.of("inline_keyboard", List.of()) : replyMarkup
-            ), type);
+                    "reply_markup", replyMarkup == null ? Map.of("inline_keyboard", List.of()) : replyMarkup), type);
         } catch (Exception e) {
             System.err.println("editMessageReplyMarkup exception: " + e.getMessage());
+        }
+    }
+
+    public boolean editMessageText(long chatId, int messageId, String text, Object replyMarkup) {
+        try {
+            LinkedHashMap<String, Object> body = new LinkedHashMap<>();
+            body.put("chat_id", chatId);
+            body.put("message_id", messageId);
+            body.put("text", text);
+            if (replyMarkup != null) {
+                body.put("reply_markup", replyMarkup);
+            }
+            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Message.class);
+            ApiResponse<Message> response = post("editMessageText", body, type);
+            if (!response.ok() || response.result() == null) {
+                System.err.println("editMessageText failed: " + response.description());
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            System.err.println("editMessageText exception: " + e.getMessage());
+            return false;
         }
     }
 
@@ -187,8 +208,7 @@ public class TelegramClient {
         return Map.of(
                 "keyboard", rows,
                 "resize_keyboard", resize,
-                "one_time_keyboard", oneTime
-        );
+                "one_time_keyboard", oneTime);
     }
 
     public static Map<String, Object> removeKeyboard() {
@@ -208,29 +228,39 @@ public class TelegramClient {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record ApiResponse<T>(boolean ok, T result, String description) {}
+    public record ApiResponse<T>(boolean ok, T result, String description) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Update(long updateId, Message message, CallbackQuery callbackQuery) {}
+    public record Update(long updateId, Message message, CallbackQuery callbackQuery) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Message(Integer messageId, Chat chat, User from, String text, Document document, WebAppData webAppData) {}
+    public record Message(Integer messageId, Chat chat, User from, String text, Document document,
+            WebAppData webAppData) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record CallbackQuery(String id, User from, Message message, String data) {}
+    public record CallbackQuery(String id, User from, Message message, String data) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Document(String fileId, String fileName, String mimeType, Long fileSize) {}
+    public record Document(String fileId, String fileName, String mimeType, Long fileSize) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record WebAppData(String data, String buttonText) {}
+    public record WebAppData(String data, String buttonText) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record FileInfo(String fileId, Integer fileSize, String filePath) {}
+    public record FileInfo(String fileId, Integer fileSize, String filePath) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Chat(long id, String type, String username, String firstName, String title) {}
+    public record Chat(long id, String type, String username, String firstName, String title) {
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record User(long id, boolean isBot, String firstName, String username) {}
+    public record User(long id, boolean isBot, String firstName, String username) {
+    }
 }

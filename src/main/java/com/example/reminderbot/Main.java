@@ -47,10 +47,11 @@ public class Main {
         }
 
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(4);
-        MiniAppServer miniAppServer = new MiniAppServer(webPort, executor);
-        miniAppServer.start();
 
         BotService botService = new BotService(telegram, stateStore, catalogStore, ZoneId.of(zone), appBaseUrl);
+        MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService);
+        miniAppServer.start();
+
         executor.submit(new UpdatePoller(telegram, botService));
         executor.scheduleWithFixedDelay(botService::processDueItems, 5, 30, TimeUnit.SECONDS);
 
