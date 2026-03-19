@@ -954,14 +954,15 @@ public class BotService {
 
     private String frequencyText(TaskDefinition task) {
         if (task == null) return "—";
+        String slots = task.recommendedSlots() > 1 ? " (" + task.recommendedSlots() + " раз)" : "";
         return switch (task.kind()) {
             case MANUAL -> "по кнопке, без расписания";
             case ONE_TIME_THIS_WEEK -> "один раз на этой неделе";
             case ONE_TIME_NEXT_WEEK -> "один раз на следующей неделе";
             case RECURRING -> switch (task.schedule().unit()) {
-                case DAY -> "каждые " + task.schedule().interval() + " дн.";
-                case WEEK -> "каждые " + task.schedule().interval() + " нед.";
-                case MONTH -> "каждые " + task.schedule().interval() + " мес.";
+                case DAY -> "каждые " + task.schedule().interval() + " дн." + slots;
+                case WEEK -> "каждые " + task.schedule().interval() + " нед." + slots;
+                case MONTH -> "каждые " + task.schedule().interval() + " мес." + slots;
             };
         };
     }
@@ -977,13 +978,15 @@ public class BotService {
 
     private String humanSchedule(Subscription sub, TaskDefinition task) {
         ZoneId zone = ZoneId.of(sub.zoneId());
+        int slots = sub.dailyTimes().size();
+        String slotsText = slots > 1 ? " (" + slots + " раз)" : "";
         return switch (task.kind()) {
             case MANUAL -> "без времени";
             case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK -> "один раз: " + ZonedDateTime.ofInstant(sub.nextRunAt(), zone).format(DATE_TIME_FMT);
             case RECURRING -> switch (task.schedule().unit()) {
-                case DAY -> "каждые " + task.schedule().interval() + " дн. в " + String.join(", ", sub.dailyTimes()) + " (" + sub.zoneId() + ")";
-                case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + dayRu(sub.dayOfWeek()) + " в " + sub.dailyTimes().getFirst() + " (" + sub.zoneId() + ")";
-                case MONTH -> "каждые " + task.schedule().interval() + " мес. " + sub.dayOfMonth() + " числа в " + sub.dailyTimes().getFirst() + " (" + sub.zoneId() + ")";
+                case DAY -> "каждые " + task.schedule().interval() + " дн. в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + sub.zoneId() + ")";
+                case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + dayRu(sub.dayOfWeek()) + " в " + sub.dailyTimes().getFirst() + slotsText + " (" + sub.zoneId() + ")";
+                case MONTH -> "каждые " + task.schedule().interval() + " мес. " + sub.dayOfMonth() + " числа в " + sub.dailyTimes().getFirst() + slotsText + " (" + sub.zoneId() + ")";
             };
         };
     }
