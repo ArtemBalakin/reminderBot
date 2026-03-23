@@ -169,6 +169,20 @@ public class TelegramClient {
         }
     }
 
+    public void setChatMenuButton(String text, String url) {
+        try {
+            Map<String, Object> menuButton = Map.of(
+                    "type", "web_app",
+                    "text", text,
+                    "web_app", Map.of("url", url)
+            );
+            JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
+            post("setChatMenuButton", Map.of("menu_button", menuButton), type);
+        } catch (Exception e) {
+            System.err.println("setChatMenuButton exception: " + e.getMessage());
+        }
+    }
+
     public String getFilePath(String fileId) throws IOException, InterruptedException {
         JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, FileInfo.class);
         ApiResponse<FileInfo> response = post("getFile", Map.of("file_id", fileId), type);
@@ -209,6 +223,14 @@ public class TelegramClient {
                 "keyboard", rows,
                 "resize_keyboard", resize,
                 "one_time_keyboard", oneTime);
+    }
+
+    public static Map<String, Object> persistentKeyboard(List<List<Map<String, Object>>> rows) {
+        return Map.of(
+                "keyboard", rows,
+                "resize_keyboard", true,
+                "one_time_keyboard", false,
+                "is_persistent", true);
     }
 
     public static Map<String, Object> removeKeyboard() {

@@ -62,6 +62,7 @@
       case 'today': renderToday(); break;
       case 'board': renderBoard(); break;
       case 'stats': renderStats(); break;
+      case 'calendar': renderCalendar(); break;
       case 'settings': renderSettings(); break;
       case 'newTask': renderNewTask(); break;
       case 'editTask': renderEditTask(params); break;
@@ -431,6 +432,102 @@
     html += `<div class="card-sub" style="margin-top:16px;text-align:center">Всего активных подписок: ${data.totalActive}</div>`;
     app.innerHTML = html;
   }
+
+  /* ── Calendar ─────────────────────────────────────────────── */
+  let calYear = new Date().getFullYear();
+  let calMonth = new Date().getMonth() + 1;
+  let calData = null;
+  let calSelected = null;
+
+  async function renderCalendar() {
+    calData = await api('/api/calendar?year=' + calYear + '&month=' + calMonth);
+    drawCalendar();
+  }
+
+  function drawCalendar() {
+    const days = calData && calData.days ? calData.days : {};
+    const monthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const dowHeaders = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+    const today = new Date();
+    const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+
+    let html = `<div class="page-header">Календарь</div>`;
+    html += `<div class="calendar-header">`;
+    html += `<button class="btn btn-secondary btn-sm" style="width:auto" onclick="window.__calPrev()">◀</button>`;
+    html += `<span style="font-size:16px;font-weight:600">${monthNames[calMonth-1]} ${calYear}</span>`;
+    html += `<button class="btn btn-secondary btn-sm" style="width:auto" onclick="window.__calNext()">▶</button>`;
+    html += `</div>`;
+
+    html += `<div class="calendar-grid">`;
+    for (const dh of dowHeaders) {
+      html += `<div class="calendar-day-header">${dh}</div>`;
+    }
+
+    const firstDay = new Date(calYear, calMonth - 1, 1);
+    let startDow = firstDay.getDay();
+    startDow = startDow === 0 ? 6 : startDow - 1;
+    for (let i = 0; i < startDow; i++) {
+      html += `<div class="calendar-day empty"></div>`;
+    }
+
+    const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      const key = calYear + '-' + String(calMonth).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+      const tasks = days[key] || [];
+      const isToday = key === todayStr;
+      const isSelected = key === calSelected;
+      const hasTasks = tasks.length > 0;
+      let cls = 'calendar-day';
+      if (isToday) cls += ' today';
+      if (isSelected) cls += ' selected';
+      if (hasTasks) cls += ' has-tasks';
+      html += `<div class="${cls}" onclick="window.__calSelect('${key}')"><div class="day-number">${d}</div>`;
+      if (hasTasks) {
+        html += `<div class="day-dots">`;
+        const dots = Math.min(tasks.length, 5);
+        for (let i = 0; i < dots; i++) html += `<div class="day-dot"></div>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+
+    if (calSelected && days[calSelected] && days[calSelected].length > 0) {
+      const selTasks = days[calSelected];
+      const parts = calSelected.split('-');
+      const label = parseInt(parts[2],10) + '.' + parts[1] + '.' + parts[0];
+      html += `<div class="calendar-details">`;
+      html += `<div class="section-title">${label} — ${selTasks.length} дел</div>`;
+      for (const t of selTasks) {
+        html += `<div class="card card-clickable" onclick="window.__showTask('${esc(t.id)}')">`;
+        html += `<div class="card-title">${esc(t.title)}</div>`;
+        html += `<div class="card-sub">${esc(t.user)}</div>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+    } else if (calSelected) {
+      html += `<div class="calendar-details"><div class="empty"><div class="empty-text">Нет дел на этот день</div></div></div>`;
+    }
+
+    app.innerHTML = html;
+  }
+
+  window.__calPrev = () => {
+    calMonth--;
+    if (calMonth < 1) { calMonth = 12; calYear--; }
+    calSelected = null;
+    renderCalendar();
+  };
+  window.__calNext = () => {
+    calMonth++;
+    if (calMonth > 12) { calMonth = 1; calYear++; }
+    calSelected = null;
+    renderCalendar();
+  };
+  window.__calSelect = key => {
+    calSelected = calSelected === key ? null : key;
+    drawCalendar();
+  };
 
   /* ── Settings ───────────────────────────────────────────────── */
   async function renderSettings() {

@@ -160,6 +160,11 @@ public class MiniAppServer {
                 case "/api/today" -> botService.apiGetTodayBoard();
                 case "/api/board" -> botService.apiGetBoard();
                 case "/api/stats" -> botService.apiGetStats();
+                case "/api/calendar" -> {
+                    int y = intParam(q, "year", java.time.LocalDate.now().getYear());
+                    int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
+                    yield botService.apiGetCalendar(y, m, q.get("zoneId"));
+                }
                 case "/api/settings" -> {
                     if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                         JsonNode body = readJsonBody(exchange);

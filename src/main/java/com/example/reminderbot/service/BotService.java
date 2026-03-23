@@ -49,6 +49,9 @@ public class BotService {
         this.appBaseUrl = appBaseUrl.endsWith("/") ? appBaseUrl.substring(0, appBaseUrl.length() - 1) : appBaseUrl;
         this.state = stateStore.load();
         this.catalog = catalogStore.load();
+        
+        // Always try to set the menu button to the MiniApp to make it static
+        this.telegram.setChatMenuButton("Планировщик", this.appBaseUrl + "/app");
     }
 
     public synchronized long getLastUpdateId() {
@@ -435,6 +438,79 @@ public class BotService {
         return Map.of("items", items, "totalActive", totalActive);
     }
 
+    public synchronized Map<String, Object> apiGetCalendar(int year, int month, String zoneIdStr) {
+        ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : defaultZone;
+        LocalDate start = LocalDate.of(year, month, 1);
+        int length = start.lengthOfMonth();
+
+        Map<String, List<Map<String, Object>>> daysMap = new LinkedHashMap<>();
+        for (int i = 1; i <= length; i++) {
+            daysMap.put(start.withDayOfMonth(i).toString(), new ArrayList<>());
+        }
+
+        for (Subscription sub : state.subscriptions()) {
+            if (!sub.active()) continue;
+            TaskDefinition task = findTask(sub.taskId());
+            if (task == null || task.kind() == TaskKind.MANUAL) continue;
+
+            List<LocalDate> runDates = new ArrayList<>();
+            if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
+                if (sub.nextRunAt() != null && !sub.oneTimeDone()) {
+                    LocalDate runDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
+                    if (runDate.getYear() == year && runDate.getMonthValue() == month) {
+                        runDates.add(runDate);
+                    }
+                }
+            } else if (task.kind() == TaskKind.RECURRING && sub.nextRunAt() != null) {
+                LocalDate anchorDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
+                for (int i = 1; i <= length; i++) {
+                    LocalDate date = start.withDayOfMonth(i);
+                    boolean matches = false;
+                    switch (task.schedule().unit()) {
+                        case DAY -> {
+                            long daysDiff = Math.abs(java.time.temporal.ChronoUnit.DAYS.between(anchorDate, date));
+                            if (daysDiff % task.schedule().interval() == 0) matches = true;
+                        }
+                        case WEEK -> {
+                            LocalDate anchorMonday = anchorDate.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+                            LocalDate dateMonday = date.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+                            long weeksDiff = Math.abs(java.time.temporal.ChronoUnit.WEEKS.between(anchorMonday, dateMonday));
+                            if (weeksDiff % task.schedule().interval() == 0) {
+                                if (sub.daysOfWeek() != null && sub.daysOfWeek().contains(date.getDayOfWeek().name())) {
+                                    matches = true;
+                                }
+                            }
+                        }
+                        case MONTH -> {
+                            LocalDate anchorStart = anchorDate.withDayOfMonth(1);
+                            LocalDate dateStart = date.withDayOfMonth(1);
+                            long monthsDiff = Math.abs(java.time.temporal.ChronoUnit.MONTHS.between(anchorStart, dateStart));
+                            if (monthsDiff % task.schedule().interval() == 0) {
+                                if (sub.daysOfMonth() != null && sub.daysOfMonth().contains(date.getDayOfMonth())) {
+                                    matches = true;
+                                }
+                            }
+                        }
+                    }
+                    if (matches) runDates.add(date);
+                }
+            }
+
+            if (!runDates.isEmpty()) {
+                String userName = displayUser(sub.chatId());
+                Map<String, Object> taskInfo = Map.of(
+                        "id", task.id(),
+                        "title", task.title(),
+                        "user", userName
+                );
+                for (LocalDate d : runDates) {
+                    daysMap.get(d.toString()).add(taskInfo);
+                }
+            }
+        }
+        return Map.of("days", daysMap);
+    }
+
     public void handleUpdate(TelegramClient.Update update) {
         if (update.callbackQuery() != null) {
             handleCallback(update.callbackQuery());
@@ -593,7 +669,7 @@ public class BotService {
         }
         if (text.equals("/cancel")) {
             clearSession(chatId);
-            telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", TelegramClient.removeKeyboard());
+            telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", persistentAppKeyboard());
             return;
         }
 
@@ -629,7 +705,8 @@ public class BotService {
         }
 
         if (text.equals("/start")) {
-            telegram.sendMessage(chatId, startText(), startKeyboard());
+            telegram.sendMessage(chatId, startText(), persistentAppKeyboard());
+            telegram.sendMessage(chatId, "\u2699\uFE0F Быстрые действия:", startInlineKeyboard());
             return;
         }
         if (text.equals("/help")) {
@@ -733,7 +810,7 @@ public class BotService {
             return;
         }
 
-        telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.", startKeyboard());
+        telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.", persistentAppKeyboard());
     }
 
     private void handleCallback(TelegramClient.CallbackQuery callback) {
@@ -860,7 +937,7 @@ public class BotService {
                 saveState();
             }
             telegram.sendMessage(profile.chatId(), "Файл импортирован. Дел: " + imported.tasks().size(),
-                    TelegramClient.removeKeyboard());
+                    persistentAppKeyboard());
         } catch (Exception e) {
             telegram.sendMessage(profile.chatId(), "Не смог импортировать файл: " + e.getMessage());
         }
@@ -872,7 +949,7 @@ public class BotService {
         if (session == null || session.type() != SessionType.WAITING_WEBAPP_SUBSCRIPTION) {
             telegram.sendMessage(chatId,
                     "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.",
-                    TelegramClient.removeKeyboard());
+                    persistentAppKeyboard());
             return;
         }
         try {
@@ -909,10 +986,10 @@ public class BotService {
             if (message.messageId() != null) {
                 telegram.deleteMessage(chatId, message.messageId());
             }
-            telegram.sendMessage(chatId, subscriptionSummary(updated, task), TelegramClient.removeKeyboard());
+            telegram.sendMessage(chatId, subscriptionSummary(updated, task), persistentAppKeyboard());
         } catch (Exception e) {
             telegram.sendMessage(chatId, "Не смог сохранить настройку из Mini App: " + e.getMessage(),
-                    TelegramClient.removeKeyboard());
+                    persistentAppKeyboard());
         }
     }
 
@@ -1025,7 +1102,7 @@ public class BotService {
         telegram.sendMessage(chatId,
                 "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(findTask(id)) +
                         "\nДальше можешь открыть /tasks и настроить себе напоминание.",
-                TelegramClient.removeKeyboard());
+                persistentAppKeyboard());
     }
 
     private void startMiniAppSubscription(long chatId, String ref) {
@@ -1700,9 +1777,13 @@ public class BotService {
                         TelegramClient.button("Europe/Berlin", "TZ:Europe/Berlin"))));
     }
 
-    private Map<String, Object> startKeyboard() {
+    private Map<String, Object> persistentAppKeyboard() {
+        return TelegramClient.persistentKeyboard(List.of(
+                List.of(TelegramClient.webAppKeyboardButton("\uD83D\uDCF1 Открыть приложение", appBaseUrl + "/app"))));
+    }
+
+    private Map<String, Object> startInlineKeyboard() {
         return TelegramClient.inlineKeyboard(List.of(
-                List.of(TelegramClient.webAppKeyboardButton("\uD83D\uDCF1 Открыть приложение", appBaseUrl + "/app")),
                 List.of(TelegramClient.button("Список дел", "TASK_PAGE:0"),
                         TelegramClient.button("Таймзона", "TZ_MENU")),
                 List.of(TelegramClient.button("Алерты", "ALERTS_ON"),
@@ -1750,7 +1831,7 @@ public class BotService {
                 saveState();
             }
             telegram.sendMessage(profile.chatId(), "Импорт в БД выполнен. Дел: " + catalog.tasks().size()
-                    + ", подписок: " + state.subscriptions().size(), TelegramClient.removeKeyboard());
+                    + ", подписок: " + state.subscriptions().size(), persistentAppKeyboard());
         } catch (Exception e) {
             telegram.sendMessage(profile.chatId(), "Не смог импортировать файл в БД: " + e.getMessage());
         }
@@ -1924,7 +2005,7 @@ public class BotService {
             if (callbackId != null) {
                 telegram.answerCallbackQuery(callbackId, "Изменено");
             }
-            telegram.sendMessage(chatId, message, TelegramClient.removeKeyboard());
+            telegram.sendMessage(chatId, message, persistentAppKeyboard());
         }
     }
 
@@ -2144,7 +2225,7 @@ public class BotService {
                 saveState();
 
                 telegram.sendMessage(chatId, "✅ Дело обновлено:\n\n" + updated.title() + "\n" + frequencyText(updated),
-                        TelegramClient.removeKeyboard());
+                        persistentAppKeyboard());
             }
         }
     }
