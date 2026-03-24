@@ -828,6 +828,10 @@ public class BotService {
             handleTimezoneSet(chatId, text.substring(7).trim());
             return;
         }
+        if (text.equals("/fastforward")) {
+            handleFastForward(chatId);
+            return;
+        }
         if (text.equals("/alerts")) {
             telegram.sendMessage(chatId, alertsText(chatId), alertsKeyboard());
             return;
@@ -2049,6 +2053,30 @@ public class BotService {
             handleChangeTaskSelect(conn, chatId, subscriptionId);
         } catch (java.sql.SQLException e) {
             telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleFastForward(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<Subscription> subs = db.subscriptions().loadAll(conn);
+            int count = 0;
+            Instant now = Instant.now();
+            for (Subscription sub : subs) {
+                if (sub.nextRunAt() == null || !sub.nextRunAt().isBefore(now)) continue;
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task == null) continue;
+                
+                Subscription current = sub;
+                while (current.nextRunAt() != null && current.nextRunAt().isBefore(now)) {
+                    current = advanceSubscription(current, task, current.nextRunAt(), now);
+                }
+                db.subscriptions().upsert(conn, current);
+                count++;
+            }
+            db.prompts().deleteAll(conn); // We need to clear all hanging prompts
+            telegram.sendMessage(chatId, "Все долги списаны! Обновлено " + count + " подписок.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД: " + e.getMessage());
         }
     }
 

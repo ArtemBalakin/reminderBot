@@ -31,11 +31,9 @@ public class SubscriptionDao {
     private Subscription readRow(Connection conn, ResultSet rs) throws SQLException {
         String id = rs.getString("id");
         List<String> dailyTimes = loadDailyTimes(conn, id);
+        List<String> dws = loadDaysOfWeek(conn, id);
+        List<Integer> dms = loadDaysOfMonth(conn, id);
         Timestamp nextRunTs = rs.getTimestamp("next_run_at");
-        String dwsStr = rs.getString("days_of_week");
-        List<String> dws = dwsStr == null || dwsStr.isBlank() ? null : List.of(dwsStr.split(","));
-        String dmsStr = rs.getString("days_of_month");
-        List<Integer> dms = dmsStr == null || dmsStr.isBlank() ? null : java.util.Arrays.stream(dmsStr.split(",")).map(Integer::parseInt).toList();
 
         return new Subscription(
                 id,
@@ -123,10 +121,34 @@ public class SubscriptionDao {
         return times;
     }
 
+    private List<String> loadDaysOfWeek(Connection conn, String subscriptionId) throws SQLException {
+        List<String> days = new ArrayList<>();
+        String sql = "SELECT day_of_week FROM subscription_days_of_week WHERE subscription_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, subscriptionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) days.add(rs.getString("day_of_week"));
+            }
+        }
+        return days.isEmpty() ? null : days;
+    }
+
+    private List<Integer> loadDaysOfMonth(Connection conn, String subscriptionId) throws SQLException {
+        List<Integer> days = new ArrayList<>();
+        String sql = "SELECT day_of_month FROM subscription_days_of_month WHERE subscription_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, subscriptionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) days.add(rs.getInt("day_of_month"));
+            }
+        }
+        return days.isEmpty() ? null : days;
+    }
+
     public void upsert(Connection conn, Subscription sub) throws SQLException {
         String sql = """
-            INSERT INTO subscriptions (id, task_id, chat_id, day_of_week, day_of_month, zone_id, next_run_at, active, one_time_done, updated_at, days_of_week, days_of_month)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            INSERT INTO subscriptions (id, task_id, chat_id, day_of_week, day_of_month, zone_id, next_run_at, active, one_time_done, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (id) DO UPDATE SET
                 task_id = EXCLUDED.task_id,
                 chat_id = EXCLUDED.chat_id,
@@ -136,9 +158,7 @@ public class SubscriptionDao {
                 next_run_at = EXCLUDED.next_run_at,
                 active = EXCLUDED.active,
                 one_time_done = EXCLUDED.one_time_done,
-                updated_at = CURRENT_TIMESTAMP,
-                days_of_week = EXCLUDED.days_of_week,
-                days_of_month = EXCLUDED.days_of_month
+                updated_at = CURRENT_TIMESTAMP
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, sub.id());
@@ -150,8 +170,6 @@ public class SubscriptionDao {
             ps.setTimestamp(7, sub.nextRunAt() != null ? Timestamp.from(sub.nextRunAt()) : null);
             ps.setBoolean(8, sub.active());
             ps.setBoolean(9, sub.oneTimeDone());
-            ps.setString(10, sub.daysOfWeek() == null || sub.daysOfWeek().isEmpty() ? null : String.join(",", sub.daysOfWeek()));
-            ps.setString(11, sub.daysOfMonth() == null || sub.daysOfMonth().isEmpty() ? null : sub.daysOfMonth().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
             ps.executeUpdate();
         }
 
@@ -159,13 +177,44 @@ public class SubscriptionDao {
             del.setString(1, sub.id());
             del.executeUpdate();
         }
-
+        try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_week WHERE subscription_id = ?")) {
+            del.setString(1, sub.id());
+            del.executeUpdate();
+        }
+        try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_month WHERE subscription_id = ?")) {
+            del.setString(1, sub.id());
+            del.executeUpdate();
+        }
         if (sub.dailyTimes() != null && !sub.dailyTimes().isEmpty()) {
             String insertTimes = "INSERT INTO subscription_daily_times (subscription_id, slot_time) VALUES (?, ?)";
             try (PreparedStatement ps = conn.prepareStatement(insertTimes)) {
                 for (String time : sub.dailyTimes()) {
                     ps.setString(1, sub.id());
                     ps.setTime(2, Time.valueOf(LocalTime.parse(time)));
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+        }
+
+        if (sub.daysOfWeek() != null && !sub.daysOfWeek().isEmpty()) {
+            String insertDow = "INSERT INTO subscription_days_of_week (subscription_id, day_of_week) VALUES (?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(insertDow)) {
+                for (String day : sub.daysOfWeek()) {
+                    ps.setString(1, sub.id());
+                    ps.setString(2, day);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+        }
+
+        if (sub.daysOfMonth() != null && !sub.daysOfMonth().isEmpty()) {
+            String insertDom = "INSERT INTO subscription_days_of_month (subscription_id, day_of_month) VALUES (?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(insertDom)) {
+                for (Integer day : sub.daysOfMonth()) {
+                    ps.setString(1, sub.id());
+                    ps.setInt(2, day);
                     ps.addBatch();
                 }
                 ps.executeBatch();

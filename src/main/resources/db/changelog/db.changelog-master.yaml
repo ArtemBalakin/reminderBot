@@ -5,3 +5,9 @@ databaseChangeLog:
   - include:
       file: 002-days-lists.yaml
       relativeToChangelogFile: true
+  - include:
+      file: 003-normalize-days.yaml
+      relativeToChangelogFile: true
+  - include:
+      file: 004-drop-days-columns.yaml
+      relativeToChangelogFile: true

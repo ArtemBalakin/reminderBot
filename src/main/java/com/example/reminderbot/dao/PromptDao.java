@@ -157,4 +157,10 @@ public class PromptDao {
             ps.executeUpdate();
         }
     }
+
+    public void deleteAll(Connection conn) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts")) {
+            ps.executeUpdate();
+        }
+    }
 }

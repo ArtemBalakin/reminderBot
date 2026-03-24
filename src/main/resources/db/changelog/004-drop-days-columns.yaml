@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-drop-days-columns
+      author: ai
+      changes:
+        - dropColumn:
+            tableName: subscriptions
+            columnName: days_of_week
+        - dropColumn:
+            tableName: subscriptions
+            columnName: days_of_month
