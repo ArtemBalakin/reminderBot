@@ -618,6 +618,7 @@ public class BotService {
                         STATE_START_WAITING, null, 0, false, now, false);
                 
                 db.prompts().upsert(conn, prompt);
+                db.subscriptions().upsert(conn, advanceSubscription(sub, task, sub.nextRunAt(), now));
                 actions.add(new DueAction(prompt, task, PromptReason.FIRST));
             }
             
@@ -2065,10 +2066,12 @@ public class BotService {
                 if (sub.nextRunAt() == null || !sub.nextRunAt().isBefore(now)) continue;
                 TaskDefinition task = findTask(conn, sub.taskId());
                 if (task == null) continue;
+                if (task.kind() == TaskKind.MANUAL) continue;
                 
                 Subscription current = sub;
                 while (current.nextRunAt() != null && current.nextRunAt().isBefore(now)) {
                     current = advanceSubscription(current, task, current.nextRunAt(), now);
+                    if (current.oneTimeDone()) break;
                 }
                 db.subscriptions().upsert(conn, current);
                 count++;
