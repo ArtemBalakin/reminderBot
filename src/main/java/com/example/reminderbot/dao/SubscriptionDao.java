@@ -15,7 +15,7 @@ public class SubscriptionDao {
         List<Subscription> subscriptions = new ArrayList<>();
         String sql = """
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
-                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+                   s.next_run_at, s.active, s.one_time_done
             FROM subscriptions s
             WHERE s.active = true
             ORDER BY s.created_at
@@ -55,7 +55,7 @@ public class SubscriptionDao {
         List<Subscription> subscriptions = new ArrayList<>();
         String sql = """
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
-                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+                   s.next_run_at, s.active, s.one_time_done
             FROM subscriptions s
             WHERE s.chat_id = ?
             ORDER BY s.created_at
@@ -72,7 +72,7 @@ public class SubscriptionDao {
     public Subscription findById(Connection conn, String id) throws SQLException {
         String sql = """
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
-                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+                   s.next_run_at, s.active, s.one_time_done
             FROM subscriptions s
             WHERE s.id = ?
             """;
@@ -89,7 +89,7 @@ public class SubscriptionDao {
         List<Subscription> subscriptions = new ArrayList<>();
         String sql = """
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
-                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+                   s.next_run_at, s.active, s.one_time_done
             FROM subscriptions s
             LEFT JOIN prompts p ON s.id = p.subscription_id
             WHERE s.active = true 
