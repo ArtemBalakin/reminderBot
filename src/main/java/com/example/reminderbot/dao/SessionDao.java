@@ -3,17 +3,14 @@ package com.example.reminderbot.dao;
 import com.example.reminderbot.model.UserSession;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
 
 public class SessionDao {
-    private final DataSource dataSource;
     private final ObjectMapper mapper;
 
-    public SessionDao(DataSource dataSource, ObjectMapper mapper) {
-        this.dataSource = dataSource;
+    public SessionDao(ObjectMapper mapper) {
         this.mapper = mapper;
     }
 
@@ -30,7 +27,7 @@ public class SessionDao {
                 Map<String, String> data = new HashMap<>();
                 if (sessionDataJson != null && !sessionDataJson.isBlank()) {
                     try {
-                        data = mapper.readValue(sessionDataJson, Map.class);
+                        data = mapper.readValue(sessionDataJson, new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
                     } catch (Exception e) {
                         // ignore malformed data
                     }
@@ -44,6 +41,34 @@ public class SessionDao {
             }
         }
         return sessions;
+    }
+
+    public UserSession findById(Connection conn, long chatId) throws SQLException {
+        String sql = "SELECT chat_id, session_type, session_data, helper_message_id FROM sessions WHERE chat_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, chatId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String sessionType = rs.getString("session_type");
+                    String sessionDataJson = rs.getString("session_data");
+                    Integer helperMsgId = (Integer) rs.getObject("helper_message_id");
+                    
+                    Map<String, String> data = new HashMap<>();
+                    if (sessionDataJson != null && !sessionDataJson.isBlank()) {
+                        try {
+                            data = mapper.readValue(sessionDataJson, new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+                        } catch (Exception e) {}
+                    }
+                    
+                    return new UserSession(
+                            com.example.reminderbot.model.SessionType.valueOf(sessionType),
+                            data,
+                            helperMsgId
+                    );
+                }
+            }
+        }
+        return null;
     }
 
     public void upsert(Connection conn, long chatId, UserSession session) throws SQLException {

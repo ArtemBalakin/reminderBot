@@ -2,17 +2,12 @@ package com.example.reminderbot.dao;
 
 import com.example.reminderbot.model.UserProfile;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
 
 public class UserDao {
-    private final DataSource dataSource;
-
-    public UserDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
+    public UserDao() {}
 
     public Map<Long, UserProfile> loadAll(Connection conn) throws SQLException {
         Map<Long, UserProfile> users = new HashMap<>();
@@ -32,6 +27,27 @@ public class UserDao {
             }
         }
         return users;
+    }
+
+    public UserProfile findById(Connection conn, long chatId) throws SQLException {
+        String sql = "SELECT chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes FROM users WHERE chat_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, chatId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new UserProfile(
+                            rs.getLong("chat_id"),
+                            rs.getString("username"),
+                            rs.getString("first_name"),
+                            rs.getString("zone_id"),
+                            rs.getBoolean("alerts_enabled"),
+                            rs.getInt("reping_minutes"),
+                            null
+                    );
+                }
+            }
+        }
+        return null;
     }
 
     public void upsert(Connection conn, UserProfile user) throws SQLException {

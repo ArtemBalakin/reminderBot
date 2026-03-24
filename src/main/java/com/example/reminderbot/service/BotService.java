@@ -1,7 +1,7 @@
 package com.example.reminderbot.service;
 
 import com.example.reminderbot.model.*;
-import com.example.reminderbot.storage.Store;
+import com.example.reminderbot.storage.DatabaseStore;
 import com.example.reminderbot.telegram.TelegramClient;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -15,9 +15,7 @@ import java.util.stream.Collectors;
 
 public class BotService {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy");
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-    private static final Duration IGNORE_REPING_DELAY = Duration.ofMinutes(5);
     private static final Duration GOING_DOING_CHECK_DELAY = Duration.ofMinutes(30);
     private static final Duration IGNORE_ALERT_DELAY = Duration.ofHours(3);
     private static final LocalTime TOMORROW_REMINDER_TIME = LocalTime.of(19, 0);
@@ -29,360 +27,392 @@ public class BotService {
     private static final String STATE_CHECK_WAITING = "CHECK_WAITING";
 
     private final TelegramClient telegram;
-    private final Store<BotState> stateStore;
-    private final Store<Catalog> catalogStore;
+    private final DatabaseStore db;
     private final ZoneId defaultZone;
     private final String appBaseUrl;
 
-    private BotState state;
-    private Catalog catalog;
-
     public BotService(TelegramClient telegram,
-            Store<BotState> stateStore,
-            Store<Catalog> catalogStore,
+            DatabaseStore db,
             ZoneId defaultZone,
             String appBaseUrl) {
         this.telegram = telegram;
-        this.stateStore = stateStore;
-        this.catalogStore = catalogStore;
+        this.db = db;
         this.defaultZone = defaultZone;
         this.appBaseUrl = appBaseUrl.endsWith("/") ? appBaseUrl.substring(0, appBaseUrl.length() - 1) : appBaseUrl;
-        this.state = stateStore.load();
-        this.catalog = catalogStore.load();
         
         // Always try to set the menu button to the MiniApp to make it static
         this.telegram.setChatMenuButton("Планировщик", this.appBaseUrl + "/app");
     }
 
-    public synchronized long getLastUpdateId() {
-        return state.lastUpdateId();
+    public long getLastUpdateId() {
+        try (java.sql.Connection conn = db.getConnection()) {
+            return db.appMeta().getLastUpdateId(conn);
+        } catch (java.sql.SQLException e) {
+            System.err.println("SQL Error: " + e.getMessage());
+            return 0;
+        }
     }
 
-    public synchronized void setLastUpdateId(long updateId) {
-        state = new BotState(state.users(), state.subscriptions(), state.prompts(), state.sessions(),
-                state.completions(), updateId);
-        saveState();
+    public void setLastUpdateId(long updateId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            db.appMeta().setLastUpdateId(conn, updateId);
+        } catch (java.sql.SQLException e) {
+            System.err.println("SQL Error: " + e.getMessage());
+        }
     }
 
     // ── MiniApp API methods ────────────────────────────────────────────
 
-    public synchronized Map<String, Object> apiGetTasksPage(int page) {
-        List<TaskDefinition> tasks = catalog.tasks();
-        int pageSize = 6;
-        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
-        int safePage = Math.max(0, Math.min(page, totalPages - 1));
-        int from = safePage * pageSize;
-        int to = Math.min(tasks.size(), from + pageSize);
-        List<Map<String, Object>> items = new ArrayList<>();
-        for (int i = from; i < to; i++) {
-            TaskDefinition t = tasks.get(i);
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("number", i + 1);
-            m.put("id", t.id());
-            m.put("title", t.title());
-            m.put("kind", t.kind().name());
-            m.put("frequency", frequencyText(t));
-            items.add(m);
-        }
-        return Map.of("tasks", items, "page", safePage, "totalPages", totalPages, "total", tasks.size());
-    }
-
-    public synchronized Map<String, Object> apiGetTaskCard(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) return Map.of("error", "Не нашёл дело: " + ref);
-        long subscribers = state.subscriptions().stream()
-                .filter(s -> s.taskId().equals(task.id()) && s.active()).count();
-        Subscription own = findUserSubscription(chatId, task.id());
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", task.id());
-        result.put("number", taskNumber(task.id()));
-        result.put("title", task.title());
-        result.put("kind", task.kind().name());
-        result.put("kindHuman", humanTaskKind(task.kind()));
-        result.put("frequency", frequencyText(task));
-        result.put("subscribers", subscribers);
-        result.put("note", task.note());
-        result.put("isManual", task.kind() == TaskKind.MANUAL);
-        result.put("recommendedSlots", task.recommendedSlots());
-        if (task.schedule() != null) {
-            result.put("scheduleUnit", task.schedule().unit().name());
-            result.put("scheduleInterval", task.schedule().interval());
-        }
-        if (own != null) {
-            Map<String, Object> sub = new LinkedHashMap<>();
-            sub.put("id", own.id());
-            sub.put("schedule", humanSchedule(own, task));
-            if (own.nextRunAt() != null) {
-                sub.put("nextRunAt", ZonedDateTime.ofInstant(own.nextRunAt(),
-                        ZoneId.of(own.zoneId())).format(DATE_TIME_FMT));
+    public Map<String, Object> apiGetTasksPage(int page) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+            int pageSize = 6;
+            int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+            int safePage = Math.max(0, Math.min(page, totalPages - 1));
+            int from = safePage * pageSize;
+            int to = Math.min(tasks.size(), from + pageSize);
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (int i = from; i < to; i++) {
+                TaskDefinition t = tasks.get(i);
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("number", i + 1);
+                m.put("id", t.id());
+                m.put("title", t.title());
+                m.put("kind", t.kind().name());
+                m.put("frequency", frequencyText(t));
+                items.add(m);
             }
-            if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
-            if (own.daysOfWeek() != null) sub.put("daysOfWeek", own.daysOfWeek());
-            else if (own.dayOfWeek() != null) sub.put("dayOfWeek", own.dayOfWeek());
-            if (own.daysOfMonth() != null) sub.put("daysOfMonth", own.daysOfMonth());
-            else if (own.dayOfMonth() != null) sub.put("dayOfMonth", own.dayOfMonth());
-            result.put("mySubscription", sub);
+            return Map.of("tasks", items, "page", safePage, "totalPages", totalPages, "total", tasks.size());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
         }
-        return result;
     }
 
-    public synchronized List<Map<String, Object>> apiGetSubscriptions(long chatId) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Subscription sub : state.subscriptions()) {
-            if (sub.chatId() != chatId || !sub.active()) continue;
-            TaskDefinition task = findTask(sub.taskId());
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("subscriptionId", sub.id());
-            m.put("taskId", sub.taskId());
-            m.put("taskTitle", task != null ? task.title() : sub.taskId());
-            m.put("schedule", task != null ? humanSchedule(sub, task) : "");
-            if (sub.nextRunAt() != null) {
-                m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
-                        ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT));
+    public Map<String, Object> apiGetTaskCard(long chatId, String ref) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) return Map.of("error", "Не нашёл дело: " + ref);
+            long subscribers = db.subscriptions().loadAll(conn).stream()
+                    .filter(s -> s.taskId().equals(task.id()) && s.active()).count();
+            Subscription own = findUserSubscription(conn, chatId, task.id());
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("id", task.id());
+            result.put("number", taskNumber(conn, task.id()));
+            result.put("title", task.title());
+            result.put("kind", task.kind().name());
+            result.put("kindHuman", humanTaskKind(task.kind()));
+            result.put("frequency", frequencyText(task));
+            result.put("subscribers", subscribers);
+            result.put("note", task.note());
+            result.put("isManual", task.kind() == TaskKind.MANUAL);
+            result.put("recommendedSlots", task.recommendedSlots());
+            if (task.schedule() != null) {
+                result.put("scheduleUnit", task.schedule().unit().name());
+                result.put("scheduleInterval", task.schedule().interval());
             }
-            result.add(m);
-        }
-        return result;
-    }
-
-    public synchronized Map<String, Object> apiGetSettings(long chatId) {
-        UserProfile profile = synchronizedProfile(chatId);
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("chatId", chatId);
-        m.put("username", profile.username());
-        m.put("firstName", profile.firstName());
-        m.put("zoneId", profile.zoneId());
-        m.put("alertsEnabled", profile.alertsEnabled());
-        m.put("repingMinutes", normalizeRepingMinutes(profile.repingMinutes()));
-        return m;
-    }
-
-    public synchronized void apiUpdateSettings(long chatId, String zoneId, Boolean alertsEnabled,
-            Integer repingMinutes) {
-        UserProfile old = synchronizedProfile(chatId);
-        String newZone = old.zoneId();
-        if (zoneId != null && !zoneId.isBlank()) {
-            ZoneId.of(zoneId); // validate
-            newZone = zoneId;
-        }
-        boolean newAlerts = alertsEnabled != null ? alertsEnabled : old.alertsEnabled();
-        int newReping = repingMinutes != null && repingMinutes >= 1 && repingMinutes <= 180
-                ? repingMinutes : normalizeRepingMinutes(old.repingMinutes());
-        state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(),
-                newZone, newAlerts, newReping, old.lastTomorrowReminderForDate()));
-        saveState();
-    }
-
-    public synchronized Map<String, Object> apiSubscribe(long chatId, String taskRef, String mode,
-            List<String> times, String dateStr, String timeStr, List<String> daysOfWeek, List<Integer> daysOfMonth) {
-        TaskDefinition task = resolveTask(taskRef);
-        if (task == null) return Map.of("error", "Дело не найдено");
-        if (task.kind() == TaskKind.MANUAL) return Map.of("error", "Ручное дело без расписания");
-        UserProfile profile = synchronizedProfile(chatId);
-        if (profile.username() == null) {
-            profile = new UserProfile(chatId, null, profile.firstName(),
-                    profile.zoneId(), profile.alertsEnabled(),
-                    normalizeRepingMinutes(profile.repingMinutes()), profile.lastTomorrowReminderForDate());
-            state.users().put(chatId, profile);
-        }
-        Subscription updated;
-        if ("daily".equals(mode)) {
-            List<String> parsed = times.stream()
-                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
-            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
-            updated = buildDailySubscription(profile, task, new ArrayList<>(parsed));
-        } else if ("weekly".equals(mode)) {
-            List<String> parsed = times.stream()
-                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
-            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
-            if (daysOfWeek == null || daysOfWeek.isEmpty()) return Map.of("error", "Нужно выбрать дни недели");
-            if (parsed.size() * daysOfWeek.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
-                return Map.of("error", "Нужно выбрать больше слотов");
-            }
-            updated = buildWeeklySubscription(profile, task, new ArrayList<>(parsed), daysOfWeek);
-        } else if ("monthly".equals(mode)) {
-            List<String> parsed = times.stream()
-                    .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
-            if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
-            if (daysOfMonth == null || daysOfMonth.isEmpty()) return Map.of("error", "Нужно выбрать числа месяца");
-            if (parsed.size() * daysOfMonth.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
-                return Map.of("error", "Нужно выбрать больше слотов");
-            }
-            updated = buildMonthlySubscription(profile, task, new ArrayList<>(parsed), daysOfMonth);
-        } else {
-            LocalDate date = LocalDate.parse(dateStr);
-            LocalTime time = parseTime(timeStr);
-            updated = buildDatedSubscription(profile, task, date, time);
-        }
-        replaceSubscription(updated);
-        saveState();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("ok", true);
-        result.put("taskTitle", task.title());
-        result.put("schedule", humanSchedule(updated, task));
-        if (updated.nextRunAt() != null) {
-            result.put("nextRunAt", ZonedDateTime.ofInstant(updated.nextRunAt(),
-                    ZoneId.of(updated.zoneId())).format(DATE_TIME_FMT));
-        }
-        return result;
-    }
-
-    public synchronized Map<String, Object> apiUnsubscribe(long chatId, String taskRef) {
-        TaskDefinition task = resolveTask(taskRef);
-        if (task == null) return Map.of("error", "Дело не найдено");
-        boolean removed = state.subscriptions().removeIf(
-                s -> s.chatId() == chatId && s.taskId().equals(task.id()));
-        state.prompts().removeIf(p -> p.chatId() == chatId && p.taskId().equals(task.id()));
-        saveState();
-        return Map.of("ok", removed, "taskTitle", task.title());
-    }
-
-    public synchronized Map<String, Object> apiCreateTask(String title, String kindCode, String unit,
-            int interval, int slots, String note) {
-        String id = slugify(title);
-        if (findTask(id) != null) id = id + "-" + shortId().substring(0, 4);
-        TaskKind kind;
-        ScheduleRule schedule = null;
-        int finalSlots = Math.max(1, slots);
-        switch (kindCode) {
-            case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
-            case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
-            case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
-            case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
-            case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
-            case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
-            default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
-        }
-        String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
-        TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote);
-        catalog.tasks().add(task);
-        catalogStore.save(catalog);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("ok", true);
-        result.put("id", task.id());
-        result.put("title", task.title());
-        result.put("frequency", frequencyText(task));
-        return result;
-    }
-
-    public synchronized Map<String, Object> apiUpdateTask(String taskId, String title, String kindCode,
-            int interval, int slots, String note) {
-        TaskDefinition existing = findTask(taskId);
-        if (existing == null) return Map.of("error", "Дело не найдено");
-        
-        TaskKind kind;
-        ScheduleRule schedule = null;
-        int finalSlots = Math.max(1, slots);
-        switch (kindCode) {
-            case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
-            case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
-            case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
-            case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
-            case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
-            case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
-            default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
-        }
-        
-        String cleanTitle = title != null && !title.isBlank() ? title.trim() : existing.title();
-        String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
-        if (note != null && note.equals("-")) cleanNote = null; // explicit delete
-        else if (note == null) cleanNote = existing.note(); // keep existing
-        
-        TaskDefinition updated = new TaskDefinition(existing.id(), cleanTitle, kind, schedule, finalSlots, cleanNote);
-        
-        catalog.tasks().removeIf(t -> t.id().equals(taskId));
-        catalog.tasks().add(updated);
-        catalogStore.save(catalog);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("ok", true);
-        result.put("id", updated.id());
-        result.put("title", updated.title());
-        result.put("frequency", frequencyText(updated));
-        return result;
-    }
-
-    public synchronized Map<String, Object> apiEditTask(String taskId, String property, String value) {
-        TaskDefinition task = findTask(taskId);
-        if (task == null) return Map.of("error", "Дело не найдено");
-        TaskDefinition updated = switch (property) {
-            case "title" -> {
-                if (value == null || value.isBlank()) yield null;
-                yield new TaskDefinition(task.id(), value.trim(), task.kind(), task.schedule(),
-                        task.recommendedSlots(), task.note());
-            }
-            case "interval" -> {
-                if (task.schedule() == null) yield null;
-                int newInterval;
-                try { newInterval = Integer.parseInt(value.trim()); if (newInterval <= 0) throw new NumberFormatException(); }
-                catch (NumberFormatException e) { yield null; }
-                yield new TaskDefinition(task.id(), task.title(), task.kind(),
-                        new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note());
-            }
-            case "note" -> {
-                String newNote = value != null && !value.trim().equals("-") && !value.isBlank() ? value.trim() : null;
-                yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(),
-                        task.recommendedSlots(), newNote);
-            }
-            default -> null;
-        };
-        if (updated == null) return Map.of("error", "Не удалось обновить свойство " + property);
-        catalog.tasks().removeIf(t -> t.id().equals(taskId));
-        catalog.tasks().add(updated);
-        catalogStore.save(catalog);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("ok", true);
-        result.put("id", updated.id());
-        result.put("title", updated.title());
-        result.put("frequency", frequencyText(updated));
-        return result;
-    }
-
-    public synchronized Map<String, Object> apiGetTodayBoard() {
-        Instant now = Instant.now();
-        List<Map<String, Object>> sections = new ArrayList<>();
-        List<UserProfile> users = new ArrayList<>(state.users().values()).stream()
-                .sorted(Comparator.comparing(this::displayNameForSort)).toList();
-        for (UserProfile profile : users) {
-            ZoneId zone = ZoneId.of(profile.zoneId());
-            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
-            List<Map<String, Object>> rows = new ArrayList<>();
-            for (Subscription sub : state.subscriptions()) {
-                if (sub.chatId() != profile.chatId() || !sub.active()) continue;
-                TaskDefinition task = findTask(sub.taskId());
-                if (task == null || task.kind() == TaskKind.MANUAL) continue;
-                ActivePrompt prompt = findTodayPrompt(sub.id(), today, zone);
-                List<CompletionRecord> done = findTodayCompletions(sub.id(), today, zone);
-                boolean hasTodayFuture = sub.nextRunAt() != null
-                        && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
-                if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
-                String status;
-                if (prompt != null) {
-                    status = switch (prompt.state()) {
-                        case "SNOOZED" -> "отложено";
-                        case "GOING_DOING_DELAY" -> "пошёл делать";
-                        case "CHECK_WAITING" -> "ждёт подтверждения";
-                        default -> "ждёт ответа";
-                    };
-                } else if (!done.isEmpty()) {
-                    status = "сделано";
-                } else {
-                    status = "запланировано на " + DATE_TIME_FMT.format(
-                            ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+            if (own != null) {
+                Map<String, Object> sub = new LinkedHashMap<>();
+                sub.put("id", own.id());
+                sub.put("schedule", humanSchedule(own, task));
+                if (own.nextRunAt() != null) {
+                    sub.put("nextRunAt", ZonedDateTime.ofInstant(own.nextRunAt(),
+                            ZoneId.of(own.zoneId())).format(DATE_TIME_FMT));
                 }
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("taskTitle", task.title());
-                row.put("status", status);
-                row.put("done", !done.isEmpty() && prompt == null);
-                rows.add(row);
+                if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
+                if (own.daysOfWeek() != null) sub.put("daysOfWeek", own.daysOfWeek());
+                else if (own.dayOfWeek() != null) sub.put("dayOfWeek", own.dayOfWeek());
+                if (own.daysOfMonth() != null) sub.put("daysOfMonth", own.daysOfMonth());
+                else if (own.dayOfMonth() != null) sub.put("dayOfMonth", own.dayOfMonth());
+                result.put("mySubscription", sub);
             }
-            if (!rows.isEmpty()) {
-                Map<String, Object> section = new LinkedHashMap<>();
-                section.put("user", displayUser(profile.chatId()));
-                section.put("tasks", rows);
-                sections.add(section);
-            }
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
         }
-        return Map.of("sections", sections);
+    }
+
+    public List<Map<String, Object>> apiGetSubscriptions(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Subscription sub : db.subscriptions().findAllByChatId(conn, chatId)) {
+                if (!sub.active()) continue;
+                TaskDefinition task = findTask(conn, sub.taskId());
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("subscriptionId", sub.id());
+                m.put("taskId", sub.taskId());
+                m.put("taskTitle", task != null ? task.title() : sub.taskId());
+                m.put("schedule", task != null ? humanSchedule(sub, task) : "");
+                if (sub.nextRunAt() != null) {
+                    m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
+                            ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT));
+                }
+                result.add(m);
+            }
+            return result;
+        } catch (java.sql.SQLException e) {
+            return List.of();
+        }
+    }
+
+    public Map<String, Object> apiGetSettings(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile profile = getProfile(conn, chatId);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("chatId", chatId);
+            m.put("username", profile.username());
+            m.put("firstName", profile.firstName());
+            m.put("zoneId", profile.zoneId());
+            m.put("alertsEnabled", profile.alertsEnabled());
+            m.put("repingMinutes", normalizeRepingMinutes(profile.repingMinutes()));
+            return m;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public void apiUpdateSettings(long chatId, String zoneId, Boolean alertsEnabled,
+            Integer repingMinutes) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile old = getProfile(conn, chatId);
+            String newZone = old.zoneId();
+            if (zoneId != null && !zoneId.isBlank()) {
+                ZoneId.of(zoneId); // validate
+                newZone = zoneId;
+            }
+            boolean newAlerts = alertsEnabled != null ? alertsEnabled : old.alertsEnabled();
+            int newReping = repingMinutes != null && repingMinutes >= 1 && repingMinutes <= 180
+                    ? repingMinutes : normalizeRepingMinutes(old.repingMinutes());
+            db.users().upsert(conn, new UserProfile(old.chatId(), old.username(), old.firstName(),
+                    newZone, newAlerts, newReping, old.lastTomorrowReminderForDate()));
+        } catch (java.sql.SQLException e) {
+            System.err.println("API db error: " + e.getMessage());
+        }
+    }
+
+    public Map<String, Object> apiSubscribe(long chatId, String taskRef, String mode,
+            List<String> times, String dateStr, String timeStr, List<String> daysOfWeek, List<Integer> daysOfMonth) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, taskRef);
+            if (task == null) return Map.of("error", "Дело не найдено");
+            if (task.kind() == TaskKind.MANUAL) return Map.of("error", "Ручное дело без расписания");
+            UserProfile profile = getProfile(conn, chatId);
+            Subscription updated;
+            if ("daily".equals(mode)) {
+                List<String> parsed = times.stream()
+                        .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+                if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+                updated = buildDailySubscription(conn, profile, task, new ArrayList<>(parsed));
+            } else if ("weekly".equals(mode)) {
+                List<String> parsed = times.stream()
+                        .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+                if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+                if (daysOfWeek == null || daysOfWeek.isEmpty()) return Map.of("error", "Нужно выбрать дни недели");
+                if (parsed.size() * daysOfWeek.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
+                    return Map.of("error", "Нужно выбрать больше слотов");
+                }
+                updated = buildWeeklySubscription(conn, profile, task, new ArrayList<>(parsed), daysOfWeek);
+            } else if ("monthly".equals(mode)) {
+                List<String> parsed = times.stream()
+                        .map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
+                if (parsed.isEmpty()) return Map.of("error", "Нужно хотя бы одно время");
+                if (daysOfMonth == null || daysOfMonth.isEmpty()) return Map.of("error", "Нужно выбрать числа месяца");
+                if (parsed.size() * daysOfMonth.size() < (task.recommendedSlots() != null ? task.recommendedSlots() : 1)) {
+                    return Map.of("error", "Нужно выбрать больше слотов");
+                }
+                updated = buildMonthlySubscription(conn, profile, task, new ArrayList<>(parsed), daysOfMonth);
+            } else {
+                LocalDate date = LocalDate.parse(dateStr);
+                LocalTime time = parseTime(timeStr);
+                updated = buildDatedSubscription(conn, profile, task, date, time);
+            }
+            db.subscriptions().upsert(conn, updated);
+            
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("taskTitle", task.title());
+            result.put("schedule", humanSchedule(updated, task));
+            if (updated.nextRunAt() != null) {
+                result.put("nextRunAt", ZonedDateTime.ofInstant(updated.nextRunAt(),
+                        ZoneId.of(updated.zoneId())).format(DATE_TIME_FMT));
+            }
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiUnsubscribe(long chatId, String taskRef) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, taskRef);
+            if (task == null) return Map.of("error", "Дело не найдено");
+            Subscription sub = findUserSubscription(conn, chatId, task.id());
+            if (sub != null) {
+                db.subscriptions().delete(conn, sub.id());
+                db.prompts().deleteBySubscriptionId(conn, sub.id());
+            }
+            return Map.of("ok", sub != null, "taskTitle", task.title());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiCreateTask(String title, String kindCode, String unit,
+            int interval, int slots, String note) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            String id = slugify(title);
+            if (findTask(conn, id) != null) id = id + "-" + shortId().substring(0, 4);
+            TaskKind kind;
+            ScheduleRule schedule = null;
+            int finalSlots = Math.max(1, slots);
+            switch (kindCode) {
+                case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
+                case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
+                case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
+                case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
+                case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
+                case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
+                default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
+            }
+            String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
+            TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote);
+            db.tasks().upsert(conn, task);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("id", task.id());
+            result.put("title", task.title());
+            result.put("frequency", frequencyText(task));
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiUpdateTask(String taskId, String title, String kindCode,
+            int interval, int slots, String note) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition existing = findTask(conn, taskId);
+            if (existing == null) return Map.of("error", "Дело не найдено");
+            
+            TaskKind kind;
+            ScheduleRule schedule = null;
+            int finalSlots = Math.max(1, slots);
+            switch (kindCode) {
+                case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
+                case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
+                case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
+                case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
+                case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
+                case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
+                default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
+            }
+            
+            String cleanTitle = title != null && !title.isBlank() ? title.trim() : existing.title();
+            String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
+            if (note != null && note.equals("-")) cleanNote = null; // explicit delete
+            else if (note == null) cleanNote = existing.note(); // keep existing
+            
+            TaskDefinition updated = new TaskDefinition(existing.id(), cleanTitle, kind, schedule, finalSlots, cleanNote);
+            db.tasks().upsert(conn, updated);
+            
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("id", updated.id());
+            result.put("title", updated.title());
+            result.put("frequency", frequencyText(updated));
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiEditTask(String taskId, String property, String value) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = findTask(conn, taskId);
+            if (task == null) return Map.of("error", "Дело не найдено");
+            TaskDefinition updated = switch (property) {
+                case "title" -> {
+                    if (value == null || value.isBlank()) yield null;
+                    yield new TaskDefinition(task.id(), value.trim(), task.kind(), task.schedule(),
+                            task.recommendedSlots(), task.note());
+                }
+                case "interval" -> {
+                    if (task.schedule() == null) yield null;
+                    int newInterval;
+                    try { newInterval = Integer.parseInt(value.trim()); if (newInterval <= 0) throw new NumberFormatException(); }
+                    catch (NumberFormatException e) { yield null; }
+                    yield new TaskDefinition(task.id(), task.title(), task.kind(),
+                            new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note());
+                }
+                case "note" -> {
+                    String newNote = value != null && !value.trim().equals("-") && !value.isBlank() ? value.trim() : null;
+                    yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(),
+                            task.recommendedSlots(), newNote);
+                }
+                default -> null;
+            };
+            if (updated == null) return Map.of("error", "Не удалось обновить свойство " + property);
+            db.tasks().upsert(conn, updated);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("id", updated.id());
+            result.put("title", updated.title());
+            result.put("frequency", frequencyText(updated));
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiGetTodayBoard() {
+        try (java.sql.Connection conn = db.getConnection()) {
+            Instant now = Instant.now();
+            List<Map<String, Object>> sections = new ArrayList<>();
+            List<UserProfile> users = db.users().loadAll(conn).values().stream()
+                    .sorted(Comparator.comparing(this::displayNameForSort)).toList();
+            for (UserProfile profile : users) {
+                ZoneId zone = ZoneId.of(profile.zoneId());
+                LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
+                    if (!sub.active()) continue;
+                    TaskDefinition task = findTask(conn, sub.taskId());
+                    if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                    ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
+                    List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
+                    boolean hasTodayFuture = sub.nextRunAt() != null
+                            && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
+                    if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
+                    String status;
+                    if (prompt != null) {
+                        status = switch (prompt.state()) {
+                            case "SNOOZED" -> "отложено";
+                            case "GOING_DOING_DELAY" -> "пошёл делать";
+                            case "CHECK_WAITING" -> "ждёт подтверждения";
+                            default -> "ждёт ответа";
+                        };
+                    } else if (!done.isEmpty()) {
+                        status = "сделано";
+                    } else {
+                        status = "запланировано на " + DATE_TIME_FMT.format(
+                                ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskTitle", task.title());
+                    row.put("status", status);
+                    row.put("done", !done.isEmpty() && prompt == null);
+                    rows.add(row);
+                }
+                if (!rows.isEmpty()) {
+                    Map<String, Object> section = new LinkedHashMap<>();
+                    section.put("user", displayUser(conn, profile.chatId()));
+                    section.put("tasks", rows);
+                    sections.add(section);
+                }
+            }
+            return Map.of("sections", sections);
+        } catch (java.sql.SQLException e) {
+            return Map.of("sections", List.of());
+        }
     }
 
     private int calcSubSlots(Subscription sub) {
@@ -393,122 +423,169 @@ public class BotService {
         return times * days;
     }
 
-    public synchronized Map<String, Object> apiGetBoard() {
-        List<Map<String, Object>> free = new ArrayList<>();
-        List<Map<String, Object>> taken = new ArrayList<>();
-        Map<String, List<Subscription>> taskSubs = new HashMap<>();
-        for (Subscription sub : state.subscriptions()) {
-            if (sub.active()) taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
-        }
-        for (TaskDefinition task : catalog.tasks()) {
-            List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
-            int takenSlots = subs.stream().mapToInt(this::calcSubSlots).sum();
-            int slots = task.recommendedSlots();
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", task.id());
-            item.put("title", task.title());
-            item.put("count", takenSlots);
-            item.put("slots", slots);
-            item.put("full", takenSlots >= slots);
-            if (!subs.isEmpty()) {
-                item.put("users", subs.stream().map(s -> displayUser(s.chatId())).toList());
-                taken.add(item);
-            } else {
-                free.add(item);
+    public Map<String, Object> apiGetBoard() {
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<Map<String, Object>> free = new ArrayList<>();
+            List<Map<String, Object>> taken = new ArrayList<>();
+            Map<String, List<Subscription>> taskSubs = new HashMap<>();
+            for (Subscription sub : db.subscriptions().loadAll(conn)) {
+                if (sub.active()) taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
             }
-        }
-        return Map.of("free", free, "taken", taken);
-    }
-
-    public synchronized Map<String, Object> apiGetStats() {
-        Map<String, Integer> taskCounts = new HashMap<>();
-        for (Subscription sub : state.subscriptions()) {
-            if (sub.active()) taskCounts.merge(sub.taskId(), calcSubSlots(sub), Integer::sum);
-        }
-        List<Map<String, Object>> items = taskCounts.entrySet().stream()
-                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-                .map(e -> {
-                    TaskDefinition task = findTask(e.getKey());
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("taskTitle", task != null ? task.title() : e.getKey());
-                    m.put("count", e.getValue());
-                    return m;
-                }).toList();
-        long totalActive = state.subscriptions().stream().filter(Subscription::active).count();
-        return Map.of("items", items, "totalActive", totalActive);
-    }
-
-    public synchronized Map<String, Object> apiGetCalendar(int year, int month, String zoneIdStr) {
-        ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : defaultZone;
-        LocalDate start = LocalDate.of(year, month, 1);
-        int length = start.lengthOfMonth();
-
-        Map<String, List<Map<String, Object>>> daysMap = new LinkedHashMap<>();
-        for (int i = 1; i <= length; i++) {
-            daysMap.put(start.withDayOfMonth(i).toString(), new ArrayList<>());
-        }
-
-        for (Subscription sub : state.subscriptions()) {
-            if (!sub.active()) continue;
-            TaskDefinition task = findTask(sub.taskId());
-            if (task == null || task.kind() == TaskKind.MANUAL) continue;
-
-            List<LocalDate> runDates = new ArrayList<>();
-            if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
-                if (sub.nextRunAt() != null && !sub.oneTimeDone()) {
-                    LocalDate runDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
-                    if (runDate.getYear() == year && runDate.getMonthValue() == month) {
-                        runDates.add(runDate);
-                    }
+            for (TaskDefinition task : db.tasks().loadAll(conn)) {
+                List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
+                int takenSlots = subs.stream().mapToInt(this::calcSubSlots).sum();
+                int slots = task.recommendedSlots();
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", task.id());
+                item.put("title", task.title());
+                item.put("count", takenSlots);
+                item.put("slots", slots);
+                item.put("full", takenSlots >= slots);
+                if (!subs.isEmpty()) {
+                    item.put("users", subs.stream().map(s -> {
+                        try { return displayUser(conn, s.chatId()); } catch (Exception e) { return String.valueOf(s.chatId()); }
+                    }).toList());
+                    taken.add(item);
+                } else {
+                    free.add(item);
                 }
-            } else if (task.kind() == TaskKind.RECURRING && sub.nextRunAt() != null) {
-                LocalDate anchorDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
-                for (int i = 1; i <= length; i++) {
-                    LocalDate date = start.withDayOfMonth(i);
-                    boolean matches = false;
-                    switch (task.schedule().unit()) {
-                        case DAY -> {
-                            long daysDiff = Math.abs(java.time.temporal.ChronoUnit.DAYS.between(anchorDate, date));
-                            if (daysDiff % task.schedule().interval() == 0) matches = true;
+            }
+            return Map.of("free", free, "taken", taken);
+        } catch (java.sql.SQLException e) {
+            return Map.of("free", List.of(), "taken", List.of());
+        }
+    }
+
+    public Map<String, Object> apiGetStats() {
+        try (java.sql.Connection conn = db.getConnection()) {
+            Map<String, Integer> taskCounts = new HashMap<>();
+            List<Subscription> subscriptions = db.subscriptions().loadAll(conn);
+            for (Subscription sub : subscriptions) {
+                if (sub.active()) taskCounts.merge(sub.taskId(), calcSubSlots(sub), Integer::sum);
+            }
+            List<Map<String, Object>> items = taskCounts.entrySet().stream()
+                    .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                    .map(e -> {
+                        TaskDefinition task;
+                        try { task = findTask(conn, e.getKey()); } catch (Exception ex) { task = null; }
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("taskTitle", task != null ? task.title() : e.getKey());
+                        m.put("count", e.getValue());
+                        return m;
+                    }).toList();
+            long totalActive = subscriptions.stream().filter(Subscription::active).count();
+            return Map.of("items", items, "totalActive", totalActive);
+        } catch (java.sql.SQLException e) {
+            return Map.of("items", List.of(), "totalActive", 0);
+        }
+    }
+
+    public Map<String, Object> apiGetCalendar(int year, int month, String zoneIdStr) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : defaultZone;
+            LocalDate start = LocalDate.of(year, month, 1);
+            int length = start.lengthOfMonth();
+
+            Map<String, List<Map<String, Object>>> daysMap = new LinkedHashMap<>();
+            for (int i = 1; i <= length; i++) {
+                daysMap.put(start.withDayOfMonth(i).toString(), new ArrayList<>());
+            }
+
+            for (Subscription sub : db.subscriptions().loadAll(conn)) {
+                if (!sub.active()) continue;
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+
+                List<LocalDate> runDates = new ArrayList<>();
+                if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
+                    if (sub.nextRunAt() != null && !sub.oneTimeDone()) {
+                        LocalDate runDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
+                        if (runDate.getYear() == year && runDate.getMonthValue() == month) {
+                            runDates.add(runDate);
                         }
-                        case WEEK -> {
-                            LocalDate anchorMonday = anchorDate.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
-                            LocalDate dateMonday = date.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
-                            long weeksDiff = Math.abs(java.time.temporal.ChronoUnit.WEEKS.between(anchorMonday, dateMonday));
-                            if (weeksDiff % task.schedule().interval() == 0) {
-                                if (sub.daysOfWeek() != null && sub.daysOfWeek().contains(date.getDayOfWeek().name())) {
-                                    matches = true;
+                    }
+                } else if (task.kind() == TaskKind.RECURRING && sub.nextRunAt() != null) {
+                    LocalDate anchorDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
+                    for (int i = 1; i <= length; i++) {
+                        LocalDate date = start.withDayOfMonth(i);
+                        boolean matches = false;
+                        switch (task.schedule().unit()) {
+                            case DAY -> {
+                                long daysDiff = Math.abs(java.time.temporal.ChronoUnit.DAYS.between(anchorDate, date));
+                                if (daysDiff % task.schedule().interval() == 0) matches = true;
+                            }
+                            case WEEK -> {
+                                LocalDate anchorMonday = anchorDate.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+                                LocalDate dateMonday = date.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+                                long weeksDiff = Math.abs(java.time.temporal.ChronoUnit.WEEKS.between(anchorMonday, dateMonday));
+                                if (weeksDiff % task.schedule().interval() == 0) {
+                                    if (sub.daysOfWeek() != null && sub.daysOfWeek().contains(date.getDayOfWeek().name())) {
+                                        matches = true;
+                                    }
+                                }
+                            }
+                            case MONTH -> {
+                                LocalDate anchorStart = anchorDate.withDayOfMonth(1);
+                                LocalDate dateStart = date.withDayOfMonth(1);
+                                long monthsDiff = Math.abs(java.time.temporal.ChronoUnit.MONTHS.between(anchorStart, dateStart));
+                                if (monthsDiff % task.schedule().interval() == 0) {
+                                    if (sub.daysOfMonth() != null && sub.daysOfMonth().contains(date.getDayOfMonth())) {
+                                        matches = true;
+                                    }
                                 }
                             }
                         }
-                        case MONTH -> {
-                            LocalDate anchorStart = anchorDate.withDayOfMonth(1);
-                            LocalDate dateStart = date.withDayOfMonth(1);
-                            long monthsDiff = Math.abs(java.time.temporal.ChronoUnit.MONTHS.between(anchorStart, dateStart));
-                            if (monthsDiff % task.schedule().interval() == 0) {
-                                if (sub.daysOfMonth() != null && sub.daysOfMonth().contains(date.getDayOfMonth())) {
-                                    matches = true;
-                                }
-                            }
-                        }
+                        if (matches) runDates.add(date);
                     }
-                    if (matches) runDates.add(date);
                 }
-            }
 
-            if (!runDates.isEmpty()) {
-                String userName = displayUser(sub.chatId());
-                Map<String, Object> taskInfo = Map.of(
-                        "id", task.id(),
-                        "title", task.title(),
-                        "user", userName
-                );
-                for (LocalDate d : runDates) {
-                    daysMap.get(d.toString()).add(taskInfo);
+                if (!runDates.isEmpty()) {
+                    String userName = displayUser(conn, sub.chatId());
+                    Map<String, Object> taskInfo = Map.of(
+                            "id", task.id(),
+                            "title", task.title(),
+                            "user", userName
+                    );
+                    for (LocalDate d : runDates) {
+                        daysMap.get(d.toString()).add(taskInfo);
+                    }
                 }
             }
+            return Map.of("days", daysMap);
+        } catch (java.sql.SQLException e) {
+            return Map.of("days", Map.of());
         }
-        return Map.of("days", daysMap);
+    }
+
+    public Map<String, Object> apiGetCalendarOverview(int year, int month, String zoneIdStr) {
+        Map<String, Object> full = apiGetCalendar(year, month, zoneIdStr);
+        @SuppressWarnings("unchecked")
+        Map<String, List<Map<String, Object>>> daysMap = (Map<String, List<Map<String, Object>>>) full.get("days");
+        if (daysMap == null) daysMap = new HashMap<>();
+        Map<String, Object> overviewDays = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Map<String, Object>>> e : daysMap.entrySet()) {
+            overviewDays.put(e.getKey(), Map.of("count", e.getValue().size()));
+        }
+        return Map.of("days", overviewDays);
+    }
+
+    public Map<String, Object> apiGetCalendarDayTasks(String dateStr, String zoneIdStr, int page, int size) {
+        LocalDate date = LocalDate.parse(dateStr);
+        Map<String, Object> full = apiGetCalendar(date.getYear(), date.getMonthValue(), zoneIdStr);
+        @SuppressWarnings("unchecked")
+        Map<String, List<Map<String, Object>>> daysMap = (Map<String, List<Map<String, Object>>>) full.get("days");
+        if (daysMap == null) daysMap = new HashMap<>();
+        List<Map<String, Object>> tasks = daysMap.getOrDefault(date.toString(), List.of());
+        
+        int total = tasks.size();
+        int safeSize = Math.max(1, size);
+        int totalPages = Math.max(1, (total + safeSize - 1) / safeSize);
+        int safePage = Math.max(0, Math.min(page, totalPages - 1));
+        int from = safePage * safeSize;
+        int to = Math.min(total, from + safeSize);
+        List<Map<String, Object>> paginated = from < to ? tasks.subList(from, to) : List.of();
+        
+        return Map.of("tasks", paginated, "page", safePage, "totalPages", totalPages, "total", total);
     }
 
     public void handleUpdate(TelegramClient.Update update) {
@@ -525,99 +602,99 @@ public class BotService {
         List<DueAction> actions = new ArrayList<>();
         List<AlertAction> alerts = new ArrayList<>();
         List<TomorrowReminderAction> tomorrowReminders = new ArrayList<>();
-        synchronized (this) {
+        
+        try (java.sql.Connection conn = db.getConnection()) {
             Instant now = Instant.now();
-            Set<String> blockedSubs = state.prompts().stream().map(ActivePrompt::subscriptionId)
-                    .collect(Collectors.toSet());
-
-            for (Subscription sub : state.subscriptions()) {
-                if (!sub.active() || sub.oneTimeDone() || sub.nextRunAt() == null || sub.nextRunAt().isAfter(now)) {
-                    continue;
-                }
-                if (blockedSubs.contains(sub.id())) {
-                    continue;
-                }
-                TaskDefinition task = findTask(sub.taskId());
-                if (task == null)
-                    continue;
+            
+            // 1. Process due subscriptions (new prompts)
+            List<Subscription> dueSubs = db.subscriptions().findDue(conn, now);
+            for (Subscription sub : dueSubs) {
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task == null) continue;
+                
                 ActivePrompt prompt = new ActivePrompt(
                         shortId(), sub.id(), sub.taskId(), sub.chatId(), sub.nextRunAt(),
-                        now.plus(userRepingDelay(sub.chatId())),
+                        now.plus(userRepingDelay(conn, sub.chatId())),
                         STATE_START_WAITING, null, 0, false, now, false);
-                state.prompts().add(prompt);
-                blockedSubs.add(sub.id());
+                
+                db.prompts().upsert(conn, prompt);
                 actions.add(new DueAction(prompt, task, PromptReason.FIRST));
             }
+            
+            // 2. Process existing active prompts
+            List<ActivePrompt> prompts = db.prompts().loadAll(conn);
+            for (ActivePrompt prompt : prompts) {
+                TaskDefinition task = findTask(conn, prompt.taskId());
+                if (task == null) continue;
 
-            for (int i = 0; i < state.prompts().size(); i++) {
-                ActivePrompt prompt = state.prompts().get(i);
-                TaskDefinition task = findTask(prompt.taskId());
-                if (task == null)
-                    continue;
-
-                ZoneId zone = ZoneId.of(userZone(prompt.chatId()));
+                ZoneId zone = ZoneId.of(userZone(conn, prompt.chatId()));
                 LocalDate scheduledDate = ZonedDateTime.ofInstant(prompt.scheduledFor(), zone).toLocalDate();
                 LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+                
+                ActivePrompt updated = prompt;
                 if (!prompt.endOfDayAlertSent() && today.isAfter(scheduledDate)) {
-                    ActivePrompt updated = new ActivePrompt(
-                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
-                            prompt.scheduledFor(), prompt.nextPingAt(),
-                            prompt.state(), prompt.messageId(), prompt.alertBroadcastCount(), true,
-                            prompt.stageStartedAt(), prompt.currentStageAlertSent());
-                    state.prompts().set(i, updated);
+                    updated = new ActivePrompt(
+                            updated.id(), updated.subscriptionId(), updated.taskId(), updated.chatId(),
+                            updated.scheduledFor(), updated.nextPingAt(),
+                            updated.state(), updated.messageId(), updated.alertBroadcastCount(), true,
+                            updated.stageStartedAt(), updated.currentStageAlertSent());
+                    db.prompts().upsert(conn, updated);
                     alerts.add(new AlertAction(updated, task, AlertReason.END_OF_DAY));
-                    prompt = updated;
                 }
 
-                if (prompt.nextPingAt() == null || prompt.nextPingAt().isAfter(now))
+                if (updated.nextPingAt() == null || updated.nextPingAt().isAfter(now))
                     continue;
 
-                if (STATE_SNOOZED.equals(prompt.state())) {
-                    ActivePrompt updated = new ActivePrompt(
-                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
-                            prompt.scheduledFor(), now.plus(userRepingDelay(prompt.chatId())),
-                            STATE_START_WAITING, prompt.messageId(), prompt.alertBroadcastCount(),
-                            prompt.endOfDayAlertSent(), now, false);
-                    state.prompts().set(i, updated);
+                if (STATE_SNOOZED.equals(updated.state())) {
+                    updated = new ActivePrompt(
+                            updated.id(), updated.subscriptionId(), updated.taskId(), updated.chatId(),
+                            updated.scheduledFor(), now.plus(userRepingDelay(conn, updated.chatId())),
+                            STATE_START_WAITING, updated.messageId(), updated.alertBroadcastCount(),
+                            updated.endOfDayAlertSent(), now, false);
+                    db.prompts().upsert(conn, updated);
                     actions.add(new DueAction(updated, task, PromptReason.SNOOZE_FINISHED));
                     continue;
                 }
 
-                if (STATE_GOING_DOING_DELAY.equals(prompt.state())) {
-                    ActivePrompt updated = new ActivePrompt(
-                            prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
-                            prompt.scheduledFor(), now.plus(userRepingDelay(prompt.chatId())),
-                            STATE_CHECK_WAITING, prompt.messageId(), prompt.alertBroadcastCount(),
-                            prompt.endOfDayAlertSent(), now, false);
-                    state.prompts().set(i, updated);
+                if (STATE_GOING_DOING_DELAY.equals(updated.state())) {
+                    updated = new ActivePrompt(
+                            updated.id(), updated.subscriptionId(), updated.taskId(), updated.chatId(),
+                            updated.scheduledFor(), now.plus(userRepingDelay(conn, updated.chatId())),
+                            STATE_CHECK_WAITING, updated.messageId(), updated.alertBroadcastCount(),
+                            updated.endOfDayAlertSent(), now, false);
+                    db.prompts().upsert(conn, updated);
                     actions.add(new DueAction(updated, task, PromptReason.CHECK_AFTER_WORK));
                     continue;
                 }
 
-                boolean isStartStage = STATE_START_WAITING.equals(prompt.state());
-                boolean isCheckStage = STATE_CHECK_WAITING.equals(prompt.state());
+                boolean isStartStage = STATE_START_WAITING.equals(updated.state());
+                boolean isCheckStage = STATE_CHECK_WAITING.equals(updated.state());
                 if (!isStartStage && !isCheckStage)
                     continue;
 
-                Instant stageStartedAt = prompt.stageStartedAt() == null ? now : prompt.stageStartedAt();
-                boolean shouldBroadcast = !prompt.currentStageAlertSent()
+                Instant stageStartedAt = updated.stageStartedAt() == null ? now : updated.stageStartedAt();
+                boolean shouldBroadcast = !updated.currentStageAlertSent()
                         && !Duration.between(stageStartedAt, now).minus(IGNORE_ALERT_DELAY).isNegative();
-                ActivePrompt updated = new ActivePrompt(
-                        prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(), prompt.scheduledFor(),
-                        now.plus(userRepingDelay(prompt.chatId())),
-                        prompt.state(), prompt.messageId(), prompt.alertBroadcastCount() + (shouldBroadcast ? 1 : 0),
-                        prompt.endOfDayAlertSent(), stageStartedAt, prompt.currentStageAlertSent() || shouldBroadcast);
-                state.prompts().set(i, updated);
+                
+                updated = new ActivePrompt(
+                        updated.id(), updated.subscriptionId(), updated.taskId(), updated.chatId(), updated.scheduledFor(),
+                        now.plus(userRepingDelay(conn, updated.chatId())),
+                        updated.state(), updated.messageId(), updated.alertBroadcastCount() + (shouldBroadcast ? 1 : 0),
+                        updated.endOfDayAlertSent(), stageStartedAt, updated.currentStageAlertSent() || shouldBroadcast);
+                
+                db.prompts().upsert(conn, updated);
                 actions.add(new DueAction(updated, task,
                         isStartStage ? PromptReason.REPEAT : PromptReason.CHECK_AFTER_WORK));
+                
                 if (shouldBroadcast) {
                     alerts.add(new AlertAction(updated, task,
                             isStartStage ? AlertReason.START_IGNORED : AlertReason.CHECK_IGNORED));
                 }
             }
-            cleanupOldCompletions(now);
-            collectTomorrowReminders(now, tomorrowReminders);
-            saveState();
+            
+            collectTomorrowReminders(conn, now, tomorrowReminders);
+        } catch (java.sql.SQLException e) {
+            System.err.println("Database error during processDueItems: " + e.getMessage());
         }
 
         for (DueAction action : actions) {
@@ -641,7 +718,13 @@ public class BotService {
         }
 
         String text = message.text() == null ? "" : message.text().trim();
-        UserSession session = synchronizedSession(chatId);
+        UserSession session = null;
+        try (java.sql.Connection conn = db.getConnection()) {
+            session = getSession(conn, chatId);
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
+        }
+
         if (session != null && message.document() != null) {
             if (session.type() == SessionType.IMPORT_CATALOG_FILE) {
                 handleImportFile(profile, message.document());
@@ -668,7 +751,9 @@ public class BotService {
             return;
         }
         if (text.equals("/cancel")) {
-            clearSession(chatId);
+            try (java.sql.Connection conn = db.getConnection()) {
+                db.sessions().delete(conn, chatId);
+            } catch (java.sql.SQLException e) {}
             telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", persistentAppKeyboard());
             return;
         }
@@ -722,7 +807,9 @@ public class BotService {
             return;
         }
         if (text.equals("/subs")) {
-            telegram.sendMessage(chatId, subscriptionsText(chatId));
+            try (java.sql.Connection conn = db.getConnection()) {
+                telegram.sendMessage(chatId, subscriptionsText(conn, chatId));
+            } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
             return;
         }
         if (text.equals("/today")) {
@@ -756,25 +843,23 @@ public class BotService {
             return;
         }
         if (text.equals("/import")) {
-            state.sessions().put(chatId, UserSession.of(SessionType.IMPORT_CATALOG_FILE));
-            saveState();
+            try (java.sql.Connection conn = db.getConnection()) {
+                db.sessions().upsert(conn, chatId, new UserSession(SessionType.IMPORT_CATALOG_FILE, Map.of(), null));
+            } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
             telegram.sendMessage(chatId,
-                    "Пришли одним следующим сообщением JSON-файл каталога. Формат: объект с полем tasks.\\n\\n" +
+                    "Пришли одним следующим сообщением JSON-файл каталога. Формат: объект с полем tasks.\n\n" +
                             "Например: {\"tasks\":[{\"title\":\"Мыть пол\",...}]}");
             return;
         }
         if (text.equals("/new")) {
-            state.sessions().put(chatId, UserSession.of(SessionType.NEW_TASK_TITLE));
-            saveState();
+            try (java.sql.Connection conn = db.getConnection()) {
+                db.sessions().upsert(conn, chatId, new UserSession(SessionType.NEW_TASK_TITLE, Map.of(), null));
+            } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
             telegram.sendMessage(chatId, "Как назвать новое дело? Просто пришли название одним сообщением.");
             return;
         }
         if (text.equals("/reload")) {
-            synchronized (this) {
-                this.catalog = catalogStore.load();
-                this.state = stateStore.load();
-            }
-            telegram.sendMessage(chatId, "Данные перечитаны. Дел: " + catalog.tasks().size());
+            telegram.sendMessage(chatId, "Состояние теперь хранится в базе данных и не требует ручной перезагрузки.");
             return;
         }
         if (text.startsWith("/reping ")) {
@@ -904,11 +989,15 @@ public class BotService {
             }
             if (data.startsWith("CHANGE_TO:")) {
                 String[] parts = data.split(":");
-                handleChangeTaskComplete(callback.id(), chatId, parts[1], parts[2]);
+                try (java.sql.Connection conn = db.getConnection()) {
+                    handleChangeTaskComplete(conn, callback.id(), chatId, parts[1], parts[2]);
+                } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
                 return;
             }
             if (data.startsWith("EDIT_TASK:")) {
-                handleEditTaskSelect(chatId, data.substring(10));
+                try (java.sql.Connection conn = db.getConnection()) {
+                    handleEditTaskSelect(conn, chatId, data.substring(10));
+                } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
@@ -925,16 +1014,18 @@ public class BotService {
         telegram.answerCallbackQuery(callback.id(), "Неизвестная кнопка");
     }
 
+    public record CatalogImport(List<TaskDefinition> tasks) {}
+
     private void handleImportFile(UserProfile profile, TelegramClient.Document document) {
         try {
             String filePath = telegram.getFilePath(document.fileId());
             byte[] bytes = telegram.downloadFile(filePath);
-            Catalog imported = stateStore.mapper().readValue(new String(bytes, StandardCharsets.UTF_8), Catalog.class);
-            synchronized (this) {
-                this.catalog = imported;
-                catalogStore.save(imported);
-                state.sessions().remove(profile.chatId());
-                saveState();
+            CatalogImport imported = db.mapper().readValue(new String(bytes, StandardCharsets.UTF_8), CatalogImport.class);
+            try (java.sql.Connection conn = db.getConnection()) {
+                for (TaskDefinition task : imported.tasks()) {
+                    db.tasks().upsert(conn, task);
+                }
+                db.sessions().delete(conn, profile.chatId());
             }
             telegram.sendMessage(profile.chatId(), "Файл импортирован. Дел: " + imported.tasks().size(),
                     persistentAppKeyboard());
@@ -945,21 +1036,21 @@ public class BotService {
 
     private void handleWebAppPayload(UserProfile profile, TelegramClient.Message message) {
         long chatId = profile.chatId();
-        UserSession session = synchronizedSession(chatId);
-        if (session == null || session.type() != SessionType.WAITING_WEBAPP_SUBSCRIPTION) {
-            telegram.sendMessage(chatId,
-                    "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.",
-                    persistentAppKeyboard());
-            return;
-        }
-        try {
-            JsonNode root = stateStore.mapper().readTree(message.webAppData().data());
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, chatId);
+            if (session == null || session.type() != SessionType.WAITING_WEBAPP_SUBSCRIPTION) {
+                telegram.sendMessage(chatId,
+                        "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.",
+                        persistentAppKeyboard());
+                return;
+            }
+            JsonNode root = db.mapper().readTree(message.webAppData().data());
             String type = root.path("type").asText();
             if (!"subscription".equals(type)) {
                 throw new IllegalArgumentException("Ожидался payload subscription");
             }
             String taskId = root.path("taskId").asText();
-            TaskDefinition task = findTask(taskId);
+            TaskDefinition task = findTask(conn, taskId);
             if (task == null)
                 throw new IllegalArgumentException("Дело не найдено");
             Subscription updated;
@@ -969,17 +1060,15 @@ public class BotService {
                     times.add(parseTime(item.asText()).format(TIME_FMT));
                 if (times.isEmpty())
                     throw new IllegalArgumentException("Нужно хотя бы одно время");
-                updated = buildDailySubscription(profile, task, times);
+                updated = buildDailySubscription(conn, profile, task, times);
             } else {
                 LocalDate date = LocalDate.parse(root.path("date").asText());
                 LocalTime time = parseTime(root.path("time").asText());
-                updated = buildDatedSubscription(profile, task, date, time);
+                updated = buildDatedSubscription(conn, profile, task, date, time);
             }
-            synchronized (this) {
-                replaceSubscription(updated);
-                state.sessions().remove(chatId);
-                saveState();
-            }
+            db.subscriptions().upsert(conn, updated);
+            db.sessions().delete(conn, chatId);
+            
             if (session.helperMessageId() != null) {
                 telegram.deleteMessage(chatId, session.helperMessageId());
             }
@@ -994,52 +1083,57 @@ public class BotService {
     }
 
     private void handleNewTaskTitle(UserProfile profile, String text) {
-        UserSession session = synchronizedSession(profile.chatId());
-        Map<String, String> data = session.data();
-        data.put("title", text.trim());
-        state.sessions().put(profile.chatId(),
-                new UserSession(SessionType.NEW_TASK_KIND, data, session.helperMessageId()));
-        saveState();
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, profile.chatId());
+            if (session == null) return;
+            Map<String, String> data = session.data();
+            data.put("title", text.trim());
+            db.sessions().upsert(conn, profile.chatId(),
+                    new UserSession(SessionType.NEW_TASK_KIND, data, session.helperMessageId()));
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
+        }
         telegram.sendMessage(profile.chatId(), "Какое правило у этого дела?", newTaskKindKeyboard());
     }
 
     private void handleNewKind(long chatId, String kindCode) {
-        UserSession session = synchronizedSession(chatId);
-        if (session == null
-                || (session.type() != SessionType.NEW_TASK_KIND && session.type() != SessionType.NEW_TASK_INTERVAL)) {
-            telegram.sendMessage(chatId, "Сначала нажми /new");
-            return;
-        }
-        Map<String, String> data = session.data();
-        switch (kindCode) {
-            case "DAY" -> {
-                data.put("kind", TaskKind.RECURRING.name());
-                data.put("unit", FrequencyUnit.DAY.name());
-                state.sessions().put(chatId,
-                        new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
-                saveState();
-                telegram.sendMessage(chatId, "Раз в сколько дней повторять? Пришли число, например 1 или 2.");
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, chatId);
+            if (session == null
+                    || (session.type() != SessionType.NEW_TASK_KIND && session.type() != SessionType.NEW_TASK_INTERVAL)) {
+                telegram.sendMessage(chatId, "Сначала нажми /new");
+                return;
             }
-            case "WEEK" -> {
-                data.put("kind", TaskKind.RECURRING.name());
-                data.put("unit", FrequencyUnit.WEEK.name());
-                state.sessions().put(chatId,
-                        new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
-                saveState();
-                telegram.sendMessage(chatId, "Раз в сколько недель повторять? Пришли число, например 1 или 3.");
+            Map<String, String> data = session.data();
+            switch (kindCode) {
+                case "DAY" -> {
+                    data.put("kind", TaskKind.RECURRING.name());
+                    data.put("unit", FrequencyUnit.DAY.name());
+                    db.sessions().upsert(conn, chatId,
+                            new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                    telegram.sendMessage(chatId, "Раз в сколько дней повторять? Пришли число, например 1 или 2.");
+                }
+                case "WEEK" -> {
+                    data.put("kind", TaskKind.RECURRING.name());
+                    data.put("unit", FrequencyUnit.WEEK.name());
+                    db.sessions().upsert(conn, chatId,
+                            new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                    telegram.sendMessage(chatId, "Раз в сколько недель повторять? Пришли число, например 1 или 3.");
+                }
+                case "MONTH" -> {
+                    data.put("kind", TaskKind.RECURRING.name());
+                    data.put("unit", FrequencyUnit.MONTH.name());
+                    db.sessions().upsert(conn, chatId,
+                            new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
+                    telegram.sendMessage(chatId, "Раз в сколько месяцев повторять? Пришли число, например 1 или 2.");
+                }
+                case "THIS_WEEK" -> saveNewTask(conn, chatId, data, TaskKind.ONE_TIME_THIS_WEEK, null, null, 1, 1);
+                case "NEXT_WEEK" -> saveNewTask(conn, chatId, data, TaskKind.ONE_TIME_NEXT_WEEK, null, null, 1, 1);
+                case "MANUAL" -> saveNewTask(conn, chatId, data, TaskKind.MANUAL, null, null, 0, 1);
+                default -> telegram.sendMessage(chatId, "Неизвестный тип.");
             }
-            case "MONTH" -> {
-                data.put("kind", TaskKind.RECURRING.name());
-                data.put("unit", FrequencyUnit.MONTH.name());
-                state.sessions().put(chatId,
-                        new UserSession(SessionType.NEW_TASK_INTERVAL, data, session.helperMessageId()));
-                saveState();
-                telegram.sendMessage(chatId, "Раз в сколько месяцев повторять? Пришли число, например 1 или 2.");
-            }
-            case "THIS_WEEK" -> saveNewTask(chatId, data, TaskKind.ONE_TIME_THIS_WEEK, null, null, 1);
-            case "NEXT_WEEK" -> saveNewTask(chatId, data, TaskKind.ONE_TIME_NEXT_WEEK, null, null, 1);
-            case "MANUAL" -> saveNewTask(chatId, data, TaskKind.MANUAL, null, null, 0);
-            default -> telegram.sendMessage(chatId, "Неизвестный тип.");
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
         }
     }
 
@@ -1055,80 +1149,83 @@ public class BotService {
             telegram.sendMessage(profile.chatId(), "Число должно быть больше 0.");
             return;
         }
-        UserSession session = synchronizedSession(profile.chatId());
-        Map<String, String> data = session.data();
-        data.put("interval", String.valueOf(interval));
-        state.sessions().put(profile.chatId(),
-                new UserSession(SessionType.NEW_TASK_NOTE, data, session.helperMessageId()));
-        saveState();
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, profile.chatId());
+            if (session == null) return;
+            Map<String, String> data = session.data();
+            data.put("interval", String.valueOf(interval));
+            db.sessions().upsert(conn, profile.chatId(),
+                    new UserSession(SessionType.NEW_TASK_NOTE, data, session.helperMessageId()));
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
+        }
         telegram.sendMessage(profile.chatId(), "Нужна короткая заметка? Пришли текст или просто - если без заметки.");
     }
 
     private void handleNewTaskNote(UserProfile profile, String text) {
-        UserSession session = synchronizedSession(profile.chatId());
-        Map<String, String> data = session.data();
-        String note = text.trim().equals("-") ? null : text.trim();
-        FrequencyUnit unit = FrequencyUnit.valueOf(data.get("unit"));
-        int interval = Integer.parseInt(data.get("interval"));
-        int slots = unit == FrequencyUnit.DAY ? 1 : 1;
-        saveNewTask(profile.chatId(), data, TaskKind.RECURRING, unit, note, slots, interval);
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, profile.chatId());
+            if (session == null) return;
+            Map<String, String> data = session.data();
+            String note = text.trim().equals("-") ? null : text.trim();
+            FrequencyUnit unit = FrequencyUnit.valueOf(data.get("unit"));
+            int interval = Integer.parseInt(data.get("interval"));
+            int slots = unit == FrequencyUnit.DAY ? 1 : 1;
+            saveNewTask(conn, profile.chatId(), data, TaskKind.RECURRING, unit, note, slots, interval);
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
+        }
     }
 
-    private void saveNewTask(long chatId, Map<String, String> data, TaskKind kind, FrequencyUnit unit, String note,
-            int slots) {
-        saveNewTask(chatId, data, kind, unit, note, slots, 1);
-    }
-
-    private void saveNewTask(long chatId, Map<String, String> data, TaskKind kind, FrequencyUnit unit, String note,
-            int slots, int interval) {
+    private void saveNewTask(java.sql.Connection conn, long chatId, Map<String, String> data, TaskKind kind, FrequencyUnit unit, String note,
+            int slots, int interval) throws java.sql.SQLException {
         String title = data.get("title");
         String id = slugify(title);
-        synchronized (this) {
-            if (findTask(id) != null) {
-                id = id + "-" + shortId().substring(0, 4);
-            }
-            TaskDefinition task = new TaskDefinition(
-                    id,
-                    title,
-                    kind,
-                    unit == null ? null : new ScheduleRule(unit, interval),
-                    slots,
-                    note);
-            catalog.tasks().add(task);
-            catalogStore.save(catalog);
-            state.sessions().remove(chatId);
-            saveState();
+        if (findTask(conn, id) != null) {
+            id = id + "-" + shortId().substring(0, 4);
         }
+        TaskDefinition task = new TaskDefinition(
+                id,
+                title,
+                kind,
+                unit == null ? null : new ScheduleRule(unit, interval),
+                slots,
+                note);
+        db.tasks().upsert(conn, task);
+        db.sessions().delete(conn, chatId);
         telegram.sendMessage(chatId,
-                "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(findTask(id)) +
+                "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(task) +
                         "\nДальше можешь открыть /tasks и настроить себе напоминание.",
                 persistentAppKeyboard());
     }
 
     private void startMiniAppSubscription(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело.");
-            return;
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело.");
+                return;
+            }
+            if (task.kind() == TaskKind.MANUAL) {
+                telegram.sendMessage(chatId, "Это ручное дело без расписания. Для него нет подписки по времени.");
+                return;
+            }
+            UserProfile profile = getProfile(conn, chatId);
+            Subscription existing = findUserSubscription(conn, chatId, task.id());
+            String url = miniAppUrl(task, profile.zoneId(), existing);
+            Map<String, Object> keyboard = TelegramClient.keyboard(List.of(
+                    List.of(TelegramClient.webAppKeyboardButton("Открыть планировщик", url)),
+                    List.of(Map.of("text", "/cancel"))), true, true);
+            Integer msgId = telegram.sendMessage(chatId,
+                    "Открой планировщик ниже. Внутри выбери дату и время, затем нажми «Сохранить».\n\n" +
+                            "Для ежедневных дел можно добавить несколько времён сразу.",
+                    keyboard,
+                    false);
+            db.sessions().upsert(conn, chatId, new UserSession(SessionType.WAITING_WEBAPP_SUBSCRIPTION,
+                    Map.of("taskId", task.id()), msgId));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка базы данных");
         }
-        if (task.kind() == TaskKind.MANUAL) {
-            telegram.sendMessage(chatId, "Это ручное дело без расписания. Для него нет подписки по времени.");
-            return;
-        }
-        UserProfile profile = synchronizedProfile(chatId);
-        Subscription existing = findUserSubscription(chatId, task.id());
-        String url = miniAppUrl(task, profile.zoneId(), existing);
-        Map<String, Object> keyboard = TelegramClient.keyboard(List.of(
-                List.of(TelegramClient.webAppKeyboardButton("Открыть планировщик", url)),
-                List.of(Map.of("text", "/cancel"))), true, true);
-        Integer msgId = telegram.sendMessage(chatId,
-                "Открой планировщик ниже. Внутри выбери дату и время, затем нажми «Сохранить».\n\n" +
-                        "Для ежедневных дел можно добавить несколько времён сразу.",
-                keyboard,
-                false);
-        state.sessions().put(chatId, new UserSession(SessionType.WAITING_WEBAPP_SUBSCRIPTION,
-                Map.of("taskId", task.id()), msgId));
-        saveState();
     }
 
     private String miniAppUrl(TaskDefinition task, String zoneId, Subscription sub) {
@@ -1159,9 +1256,9 @@ public class BotService {
                 .collect(Collectors.joining("&"));
     }
 
-    private Subscription buildDailySubscription(UserProfile profile, TaskDefinition task, List<String> times) {
+    private Subscription buildDailySubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, List<String> times) throws java.sql.SQLException {
         ZoneId zone = ZoneId.of(profile.zoneId());
-        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         List<String> normalized = times.stream().map(t -> parseTime(t).format(TIME_FMT)).sorted().distinct().toList();
         Instant next = computeNextDaily(normalized, task.schedule().interval(), zone, Instant.now());
         return new Subscription(
@@ -1179,30 +1276,30 @@ public class BotService {
                 null);
     }
 
-    private Subscription buildWeeklySubscription(UserProfile profile, TaskDefinition task, List<String> times, List<String> daysOfWeek) {
+    private Subscription buildWeeklySubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, List<String> times, List<String> daysOfWeek) throws java.sql.SQLException {
         ZoneId zone = ZoneId.of(profile.zoneId());
-        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         Instant next = computeNextWeekly(times, daysOfWeek, task.schedule().interval(), zone, Instant.now());
         return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
                 times, null, null, profile.zoneId(), next, true, false, daysOfWeek, null);
     }
 
-    private Subscription buildMonthlySubscription(UserProfile profile, TaskDefinition task, List<String> times, List<Integer> daysOfMonth) {
+    private Subscription buildMonthlySubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, List<String> times, List<Integer> daysOfMonth) throws java.sql.SQLException {
         ZoneId zone = ZoneId.of(profile.zoneId());
-        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         Instant next = computeNextMonthly(times, daysOfMonth, task.schedule().interval(), zone, Instant.now());
         return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
                 times, null, null, profile.zoneId(), next, true, false, null, daysOfMonth);
     }
 
-    private Subscription buildDatedSubscription(UserProfile profile, TaskDefinition task, LocalDate date,
-            LocalTime time) {
+    private Subscription buildDatedSubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, LocalDate date,
+            LocalTime time) throws java.sql.SQLException {
         ZoneId zone = ZoneId.of(profile.zoneId());
         ZonedDateTime chosen = ZonedDateTime.of(date, time, zone);
         if (!chosen.toInstant().isAfter(Instant.now())) {
             throw new IllegalArgumentException("Этот момент уже прошёл");
         }
-        Subscription existing = findUserSubscription(profile.chatId(), task.id());
+        Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         return switch (task.kind()) {
             case RECURRING -> {
                 if (task.schedule().unit() == FrequencyUnit.WEEK) {
@@ -1231,112 +1328,124 @@ public class BotService {
     }
 
     private void sendTasksPage(long chatId, int page, Integer messageId) {
-        List<TaskDefinition> tasks = catalog.tasks();
-        if (tasks.isEmpty()) {
-            telegram.sendMessage(chatId, "Каталог пуст. Пришли файл через /import или создай дело через /new.");
-            return;
-        }
-        int pageSize = 6;
-        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
-        int safePage = Math.max(0, Math.min(page, totalPages - 1));
-        int from = safePage * pageSize;
-        int to = Math.min(tasks.size(), from + pageSize);
-        StringBuilder sb = new StringBuilder("Дела — страница ").append(safePage + 1).append("/").append(totalPages)
-                .append("\n\n");
-        for (int i = from; i < to; i++) {
-            sb.append(i + 1).append(". ").append(tasks.get(i).title()).append("\n   ")
-                    .append(frequencyText(tasks.get(i))).append("\n\n");
-        }
-        sb.append("Нажми на дело, чтобы открыть карточку и настроить себе напоминание.");
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+            if (tasks.isEmpty()) {
+                telegram.sendMessage(chatId, "Каталог пуст. Пришли файл через /import или создай дело через /new.");
+                return;
+            }
+            int pageSize = 6;
+            int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+            int safePage = Math.max(0, Math.min(page, totalPages - 1));
+            int from = safePage * pageSize;
+            int to = Math.min(tasks.size(), from + pageSize);
+            StringBuilder sb = new StringBuilder("Дела — страница ").append(safePage + 1).append("/").append(totalPages)
+                    .append("\n\n");
+            for (int i = from; i < to; i++) {
+                sb.append(i + 1).append(". ").append(tasks.get(i).title()).append("\n   ")
+                        .append(frequencyText(tasks.get(i))).append("\n\n");
+            }
+            sb.append("Нажми на дело, чтобы открыть карточку и настроить себе напоминание.");
 
-        List<List<Map<String, Object>>> rows = new ArrayList<>();
-        for (int i = from; i < to; i++) {
-            rows.add(List.of(
-                    TelegramClient.button((i + 1) + ". " + trimTitle(tasks.get(i).title()), "TASK_SHOW:" + (i + 1))));
-        }
-        List<Map<String, Object>> nav = new ArrayList<>();
-        if (safePage > 0)
-            nav.add(TelegramClient.button("◀️", "TASK_PAGE:" + (safePage - 1)));
-        if (safePage < totalPages - 1)
-            nav.add(TelegramClient.button("▶️", "TASK_PAGE:" + (safePage + 1)));
-        if (!nav.isEmpty())
-            rows.add(nav);
-        
-        if (messageId != null) {
-            telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
-        } else {
-            telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            for (int i = from; i < to; i++) {
+                rows.add(List.of(
+                        TelegramClient.button((i + 1) + ". " + trimTitle(tasks.get(i).title()), "TASK_SHOW:" + (i + 1))));
+            }
+            List<Map<String, Object>> nav = new ArrayList<>();
+            if (safePage > 0)
+                nav.add(TelegramClient.button("◀️", "TASK_PAGE:" + (safePage - 1)));
+            if (safePage < totalPages - 1)
+                nav.add(TelegramClient.button("▶️", "TASK_PAGE:" + (safePage + 1)));
+            if (!nav.isEmpty())
+                rows.add(nav);
+            
+            if (messageId != null) {
+                telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+            } else {
+                telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+            }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка получения каталога.");
         }
     }
 
     private void showTaskCard(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
-        }
-        long subscribers = state.subscriptions().stream().filter(s -> s.taskId().equals(task.id()) && s.active())
-                .count();
-        Subscription own = findUserSubscription(chatId, task.id());
-        String text = """
-                %s
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+                return;
+            }
+            long subscribers = db.subscriptions().loadAll(conn).stream().filter(s -> s.taskId().equals(task.id()) && s.active())
+                    .count();
+            Subscription own = findUserSubscription(conn, chatId, task.id());
+            String text = """
+                    %s
 
-                Номер: %d
-                Как повторяется: %s
-                Тип: %s
-                Подписчиков: %d
-                %s
-                %s
-                """.formatted(
-                task.title(),
-                taskNumber(task.id()),
-                frequencyText(task),
-                humanTaskKind(task.kind()),
-                subscribers,
-                task.note() == null || task.note().isBlank() ? "" : ("Заметка: " + task.note()),
-                own == null ? "У тебя пока нет своей настройки." : ("Твоя настройка: " + humanSchedule(own, task)));
-        List<List<Map<String, Object>>> rows = new ArrayList<>();
-        if (task.kind() != TaskKind.MANUAL) {
-            rows.add(
-                    List.of(TelegramClient.button(own == null ? "🗓 Настроить через Mini App" : "🗓 Изменить настройку",
-                            "SUB_START:" + taskNumber(task.id()))));
-            if (own != null)
-                rows.add(List.of(TelegramClient.button("Удалить мою настройку", "UNSUB:" + taskNumber(task.id()))));
+                    Номер: %d
+                    Как повторяется: %s
+                    Тип: %s
+                    Подписчиков: %d
+                    %s
+                    %s
+                    """.formatted(
+                    task.title(),
+                    taskNumber(conn, task.id()),
+                    frequencyText(task),
+                    humanTaskKind(task.kind()),
+                    subscribers,
+                    task.note() == null || task.note().isBlank() ? "" : ("Заметка: " + task.note()),
+                    own == null ? "У тебя пока нет своей настройки." : ("Твоя настройка: " + humanSchedule(own, task)));
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            if (task.kind() != TaskKind.MANUAL) {
+                rows.add(
+                        List.of(TelegramClient.button(own == null ? "🗓 Настроить через Mini App" : "🗓 Изменить настройку",
+                                "SUB_START:" + taskNumber(conn, task.id()))));
+                if (own != null)
+                    rows.add(List.of(TelegramClient.button("Удалить мою настройку", "UNSUB:" + taskNumber(conn, task.id()))));
+            }
+            rows.add(List.of(
+                    TelegramClient.button("Кто подписан", "WHO:" + taskNumber(conn, task.id())),
+                    TelegramClient.button("✏️ Редактировать", "EDIT_TASK:" + taskNumber(conn, task.id()))));
+            telegram.sendMessage(chatId, text.strip(), TelegramClient.inlineKeyboard(rows));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка получения карточки дела.");
         }
-        rows.add(List.of(
-                TelegramClient.button("Кто подписан", "WHO:" + taskNumber(task.id())),
-                TelegramClient.button("✏️ Редактировать", "EDIT_TASK:" + taskNumber(task.id()))));
-        telegram.sendMessage(chatId, text.strip(), TelegramClient.inlineKeyboard(rows));
     }
 
     private void handleWho(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+                return;
+            }
+            List<Subscription> subs = db.subscriptions().loadAll(conn).stream()
+                    .filter(s -> s.taskId().equals(task.id()) && s.active())
+                    .toList();
+            if (subs.isEmpty()) {
+                telegram.sendMessage(chatId, "На это дело пока никто не подписан.");
+                return;
+            }
+            String body = subs.stream().map(s -> {
+                try { return "• " + displayUser(conn, s.chatId()) + " — " + humanSchedule(s, task); }
+                catch (Exception e) { return ""; }
+            }).collect(Collectors.joining("\n\n"));
+            telegram.sendMessage(chatId, "Кто подписан на «" + task.title() + "»:\n\n" + body);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка получения данных о подписках.");
         }
-        List<Subscription> subs = state.subscriptions().stream()
-                .filter(s -> s.taskId().equals(task.id()) && s.active())
-                .toList();
-        if (subs.isEmpty()) {
-            telegram.sendMessage(chatId, "На это дело пока никто не подписан.");
-            return;
-        }
-        String body = subs.stream().map(s -> "• " + displayUser(s.chatId()) + " — " + humanSchedule(s, task))
-                .collect(Collectors.joining("\n\n"));
-        telegram.sendMessage(chatId, "Кто подписан на «" + task.title() + "»:\n\n" + body);
     }
 
     private void handleTimezoneSet(long chatId, String zoneText) {
         try {
             ZoneId zone = ZoneId.of(zoneText.trim());
-            synchronized (this) {
-                UserProfile old = synchronizedProfile(chatId);
-                state.users().put(chatId,
-                        new UserProfile(old.chatId(), old.username(), old.firstName(), zone.getId(),
-                                old.alertsEnabled(), normalizeRepingMinutes(old.repingMinutes()),
-                                old.lastTomorrowReminderForDate()));
-                saveState();
+            try (java.sql.Connection conn = db.getConnection()) {
+                UserProfile old = getProfile(conn, chatId);
+                db.users().upsert(conn, new UserProfile(old.chatId(), old.username(), old.firstName(), zone.getId(),
+                        old.alertsEnabled(), normalizeRepingMinutes(old.repingMinutes()),
+                        old.lastTomorrowReminderForDate()));
             }
             telegram.sendMessage(chatId, "Таймзона обновлена: " + zone.getId());
         } catch (Exception e) {
@@ -1346,75 +1455,86 @@ public class BotService {
     }
 
     private void handleUnsub(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
-        }
-        synchronized (this) {
-            boolean removed = state.subscriptions().removeIf(s -> s.chatId() == chatId && s.taskId().equals(task.id()));
-            state.prompts().removeIf(p -> p.chatId() == chatId && p.taskId().equals(task.id()));
-            saveState();
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+                return;
+            }
+            Subscription sub = findUserSubscription(conn, chatId, task.id());
+            if (sub != null) {
+                db.subscriptions().delete(conn, sub.id());
+                db.prompts().deleteBySubscriptionId(conn, sub.id());
+            }
             telegram.sendMessage(chatId,
-                    removed ? "Настройка удалена: " + task.title() : "У тебя не было настройки для этого дела.");
+                    sub != null ? "Настройка удалена: " + task.title() : "У тебя не было настройки для этого дела.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка удаления настройки.");
         }
     }
 
     private void handlePromptDone(String callbackId, String promptId, long chatId, Integer messageId) {
-        synchronized (this) {
-            ActivePrompt prompt = findPrompt(promptId);
+        try (java.sql.Connection conn = db.getConnection()) {
+            ActivePrompt prompt = findPrompt(conn, promptId);
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            Subscription sub = findSubscription(prompt.subscriptionId());
-            TaskDefinition task = findTask(prompt.taskId());
-            state.prompts().removeIf(p -> p.id().equals(promptId));
-            state.completions().add(new CompletionRecord(prompt.id(), prompt.subscriptionId(), prompt.taskId(),
-                    prompt.chatId(), prompt.scheduledFor(), Instant.now()));
+            Subscription sub = findSubscription(conn, prompt.subscriptionId());
+            TaskDefinition task = findTask(conn, prompt.taskId());
+            db.prompts().delete(conn, promptId);
+            
+            CompletionRecord completion = new CompletionRecord(prompt.id(), prompt.subscriptionId(), prompt.taskId(),
+                    prompt.chatId(), prompt.scheduledFor(), Instant.now());
+            
+            db.completions().upsert(conn, completion);
+            
             if (sub != null && task != null) {
-                replaceSubscription(advanceSubscription(sub, task, prompt.scheduledFor(), Instant.now()));
+                db.subscriptions().upsert(conn, advanceSubscription(sub, task, prompt.scheduledFor(), Instant.now()));
             }
-            saveState();
+            telegram.answerCallbackQuery(callbackId, "Отмечено как сделано");
+            if (messageId != null)
+                telegram.editMessageReplyMarkup(chatId, messageId, TelegramClient.inlineKeyboard(List.of()));
+        } catch (java.sql.SQLException e) {
+            telegram.answerCallbackQuery(callbackId, "Ошибка базы данных");
         }
-        telegram.answerCallbackQuery(callbackId, "Отмечено как сделано");
-        if (messageId != null)
-            telegram.editMessageReplyMarkup(chatId, messageId, TelegramClient.inlineKeyboard(List.of()));
     }
 
     private void handlePromptSnooze(String callbackId, String promptId, int hours, long chatId) {
-        synchronized (this) {
-            ActivePrompt prompt = findPrompt(promptId);
+        try (java.sql.Connection conn = db.getConnection()) {
+            ActivePrompt prompt = findPrompt(conn, promptId);
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
+            db.prompts().upsert(conn, new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
                     prompt.scheduledFor(),
                     Instant.now().plus(Duration.ofHours(hours)), STATE_SNOOZED, prompt.messageId(),
                     prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), null, false));
-            saveState();
+            telegram.answerCallbackQuery(callbackId, "Отложено на " + hours + " ч");
+            telegram.sendMessage(chatId, "Ок, напомню через " + hours + " ч.");
+        } catch (java.sql.SQLException e) {
+            telegram.answerCallbackQuery(callbackId, "Ошибка базы данных");
         }
-        telegram.answerCallbackQuery(callbackId, "Отложено на " + hours + " ч");
-        telegram.sendMessage(chatId, "Ок, напомню через " + hours + " ч.");
     }
 
     private void handlePromptGoDoing(String callbackId, String promptId, long chatId) {
-        synchronized (this) {
-            ActivePrompt prompt = findPrompt(promptId);
+        try (java.sql.Connection conn = db.getConnection()) {
+            ActivePrompt prompt = findPrompt(conn, promptId);
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
+            db.prompts().upsert(conn, new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
                     prompt.scheduledFor(),
                     Instant.now().plus(GOING_DOING_CHECK_DELAY), STATE_GOING_DOING_DELAY, prompt.messageId(),
                     prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), null, false));
-            saveState();
+            telegram.answerCallbackQuery(callbackId, "Хорошо");
+            telegram.sendMessage(chatId,
+                    "Ок, считаю, что ты пошёл делать. Через 30 минут спрошу, сделал ли ты. Если потом молчать — буду перепингивать с твоим интервалом /reping.");
+        } catch (java.sql.SQLException e) {
+            telegram.answerCallbackQuery(callbackId, "Ошибка базы данных");
         }
-        telegram.answerCallbackQuery(callbackId, "Хорошо");
-        telegram.sendMessage(chatId,
-                "Ок, считаю, что ты пошёл делать. Через 30 минут спрошу, сделал ли ты. Если потом молчать — буду перепингивать с твоим интервалом /reping.");
     }
 
     private void sendSnoozeHoursPicker(long chatId, String promptId) {
@@ -1435,18 +1555,19 @@ public class BotService {
             case SNOOZE_FINISHED -> "⏰ Время после откладывания вышло";
             case CHECK_AFTER_WORK -> "👀 Проверяю: получилось сделать?";
         };
-        String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId())))
-                .format(DATE_TIME_FMT);
-        Integer messageId = telegram.sendMessage(prompt.chatId(), header + "\n\n" + task.title() + "\nПлан: " + when,
-                promptKeyboard(prompt.id()));
-        if (messageId != null) {
-            synchronized (this) {
-                replacePrompt(new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
+        try (java.sql.Connection conn = db.getConnection()) {
+            String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(conn, prompt.chatId())))
+                    .format(DATE_TIME_FMT);
+            Integer messageId = telegram.sendMessage(prompt.chatId(), header + "\n\n" + task.title() + "\nПлан: " + when,
+                    promptKeyboard(prompt.id()));
+            if (messageId != null) {
+                db.prompts().upsert(conn, new ActivePrompt(prompt.id(), prompt.subscriptionId(), prompt.taskId(), prompt.chatId(),
                         prompt.scheduledFor(), prompt.nextPingAt(), prompt.state(), messageId,
                         prompt.alertBroadcastCount(), prompt.endOfDayAlertSent(), prompt.stageStartedAt(),
                         prompt.currentStageAlertSent()));
-                saveState();
             }
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error in sendPrompt: " + e.getMessage());
         }
     }
 
@@ -1566,71 +1687,67 @@ public class BotService {
         String username = message.from() != null ? message.from().username() : null;
         String firstName = message.from() != null && message.from().firstName() != null ? message.from().firstName()
                 : "User";
-        synchronized (this) {
-            UserProfile existing = state.users().get(chatId);
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile existing = db.users().findById(conn, chatId);
             UserProfile profile = existing != null
                     ? new UserProfile(chatId, username, firstName, existing.zoneId(), existing.alertsEnabled(),
                             normalizeRepingMinutes(existing.repingMinutes()), existing.lastTomorrowReminderForDate())
                     : new UserProfile(chatId, username, firstName, defaultZone.getId(), true, DEFAULT_REPING_MINUTES,
                             null);
-            state.users().put(chatId, profile);
-            saveState();
+            db.users().upsert(conn, profile);
             return profile;
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
+            return new UserProfile(chatId, username, firstName, defaultZone.getId(), true, DEFAULT_REPING_MINUTES, null);
         }
     }
 
-    private UserProfile synchronizedProfile(long chatId) {
-        UserProfile profile = state.users().get(chatId);
+    private UserProfile getProfile(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        UserProfile profile = db.users().findById(conn, chatId);
         if (profile == null) {
             profile = new UserProfile(chatId, null, "User", defaultZone.getId(), true, DEFAULT_REPING_MINUTES, null);
-            state.users().put(chatId, profile);
+            db.users().upsert(conn, profile);
         }
         return profile;
     }
 
-    private UserSession synchronizedSession(long chatId) {
-        return state.sessions().get(chatId);
+    private UserSession getSession(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        return db.sessions().findById(conn, chatId);
     }
 
-    private void clearSession(long chatId) {
-        UserSession session = state.sessions().remove(chatId);
-        if (session != null && session.helperMessageId() != null) {
-            telegram.deleteMessage(chatId, session.helperMessageId());
-        }
-        saveState();
+    private Subscription findUserSubscription(java.sql.Connection conn, long chatId, String taskId) throws java.sql.SQLException {
+        return db.subscriptions().findAllByChatId(conn, chatId).stream()
+                .filter(s -> s.taskId().equals(taskId) && s.active()).findFirst().orElse(null);
     }
 
-    private Subscription findUserSubscription(long chatId, String taskId) {
-        return state.subscriptions().stream()
-                .filter(s -> s.chatId() == chatId && s.taskId().equals(taskId) && s.active()).findFirst().orElse(null);
+    private Subscription findSubscription(java.sql.Connection conn, String id) throws java.sql.SQLException {
+        return db.subscriptions().findById(conn, id);
     }
 
-    private Subscription findSubscription(String id) {
-        return state.subscriptions().stream().filter(s -> s.id().equals(id)).findFirst().orElse(null);
+    private ActivePrompt findPrompt(java.sql.Connection conn, String id) throws java.sql.SQLException {
+        return db.prompts().findById(conn, id);
     }
 
-    private ActivePrompt findPrompt(String id) {
-        return state.prompts().stream().filter(p -> p.id().equals(id)).findFirst().orElse(null);
+    private TaskDefinition findTask(java.sql.Connection conn, String id) throws java.sql.SQLException {
+        return db.tasks().findById(conn, id);
     }
 
-    private TaskDefinition findTask(String id) {
-        return catalog.tasks().stream().filter(t -> t.id().equals(id)).findFirst().orElse(null);
-    }
-
-    private TaskDefinition resolveTask(String ref) {
+    private TaskDefinition resolveTask(java.sql.Connection conn, String ref) throws java.sql.SQLException {
         if (ref == null || ref.isBlank())
             return null;
         String value = ref.trim();
         if (value.chars().allMatch(Character::isDigit)) {
             int idx = Integer.parseInt(value) - 1;
-            return idx >= 0 && idx < catalog.tasks().size() ? catalog.tasks().get(idx) : null;
+            List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+            return idx >= 0 && idx < tasks.size() ? tasks.get(idx) : null;
         }
-        return findTask(value);
+        return findTask(conn, value);
     }
 
-    private int taskNumber(String taskId) {
-        for (int i = 0; i < catalog.tasks().size(); i++) {
-            if (catalog.tasks().get(i).id().equals(taskId))
+    private int taskNumber(java.sql.Connection conn, String taskId) throws java.sql.SQLException {
+        List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+        for (int i = 0; i < tasks.size(); i++) {
+            if (tasks.get(i).id().equals(taskId))
                 return i + 1;
         }
         return -1;
@@ -1682,15 +1799,14 @@ public class BotService {
         };
     }
 
-    private String subscriptionsText(long chatId) {
-        List<Subscription> own = state.subscriptions().stream().filter(s -> s.chatId() == chatId && s.active())
-                .toList();
+    private String subscriptionsText(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        List<Subscription> own = db.subscriptions().findAllByChatId(conn, chatId).stream().filter(Subscription::active).toList();
         if (own.isEmpty())
             return "У тебя пока нет настроек. Открой /tasks и выбери дело.";
         StringBuilder sb = new StringBuilder("Твои настройки:\n\n");
         int i = 1;
         for (Subscription sub : own) {
-            TaskDefinition task = findTask(sub.taskId());
+            TaskDefinition task = findTask(conn, sub.taskId());
             sb.append(i++).append(". ").append(task == null ? sub.taskId() : task.title()).append("\n")
                     .append("   ").append(task == null ? "" : humanSchedule(sub, task)).append("\n");
             if (sub.nextRunAt() != null) {
@@ -1710,19 +1826,24 @@ public class BotService {
     }
 
     private void setAlertsEnabled(long chatId, boolean enabled) {
-        synchronized (this) {
-            UserProfile old = synchronizedProfile(chatId);
-            state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(),
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile old = getProfile(conn, chatId);
+            db.users().upsert(conn, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(),
                     enabled, normalizeRepingMinutes(old.repingMinutes()), old.lastTomorrowReminderForDate()));
-            saveState();
+        } catch (Exception e) {
+            System.err.println("DB error: " + e.getMessage());
         }
     }
 
     private String alertsText(long chatId) {
-        UserProfile profile = synchronizedProfile(chatId);
-        return profile.alertsEnabled()
-                ? "Ты подписан на общие алерты. Бот сообщит, если кто-то долго игнорирует дело или не закроет его до конца дня."
-                : "Ты отписан от общих алертов. Бот не будет присылать тебе чужие тревожные уведомления.";
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile profile = getProfile(conn, chatId);
+            return profile.alertsEnabled()
+                    ? "Ты подписан на общие алерты. Бот сообщит, если кто-то долго игнорирует дело или не закроет его до конца дня."
+                    : "Ты отписан от общих алертов. Бот не будет присылать тебе чужие тревожные уведомления.";
+        } catch (Exception e) {
+            return "Ошибка БД";
+        }
     }
 
     private Map<String, Object> alertsKeyboard() {
@@ -1732,41 +1853,50 @@ public class BotService {
     }
 
     private void sendGlobalAlert(ActivePrompt prompt, TaskDefinition task, AlertReason reason) {
-        UserProfile owner = state.users().get(prompt.chatId());
-        String who = owner == null
-                ? "кто-то"
-                : (owner.username() != null && !owner.username().isBlank() ? "@" + owner.username()
-                        : owner.firstName());
-        String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(userZone(prompt.chatId())))
-                .format(DATE_TIME_FMT);
-        String header = switch (reason) {
-            case START_IGNORED -> "🚨 Алерт: игнорирует начало дела уже 3 часа";
-            case CHECK_IGNORED -> "🚨 Алерт: не подтвердил завершение после кнопки «Пошёл делать»";
-            case END_OF_DAY -> "🚨 Алерт: день закончился, а дело не закрыто";
-        };
-        String details = switch (reason) {
-            case START_IGNORED ->
-                "Человек не отреагировал на стартовый пинг. Бот уже перепингивает с заданным интервалом.";
-            case CHECK_IGNORED ->
-                "Человек нажал «Пошёл делать», но потом 3 часа игнорирует проверку «Сделал?». Бот уже перепингивает с заданным интервалом.";
-            case END_OF_DAY -> "Сегодня это дело должно было быть закрыто, но подтверждения так и не было.";
-        };
-        String text = header + "\n\n" +
-                "Дело: " + task.title() + "\n" +
-                "Кто: " + who + "\n" +
-                "Плановое время: " + when + "\n\n" +
-                details + "\n\n" +
-                "Чтобы не получать такие уведомления: /alerts off";
-        for (UserProfile profile : new ArrayList<>(state.users().values())) {
-            if (!profile.alertsEnabled())
-                continue;
-            telegram.sendMessage(profile.chatId(), text, alertsKeyboard());
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile owner = db.users().findById(conn, prompt.chatId());
+            String who = owner == null
+                    ? "кто-то"
+                    : (owner.username() != null && !owner.username().isBlank() ? "@" + owner.username()
+                            : owner.firstName());
+            String zoneId = owner != null ? owner.zoneId() : defaultZone.getId();
+            String when = ZonedDateTime.ofInstant(prompt.scheduledFor(), ZoneId.of(zoneId))
+                    .format(DATE_TIME_FMT);
+            String header = switch (reason) {
+                case START_IGNORED -> "🚨 Алерт: игнорирует начало дела уже 3 часа";
+                case CHECK_IGNORED -> "🚨 Алерт: не подтвердил завершение после кнопки «Пошёл делать»";
+                case END_OF_DAY -> "🚨 Алерт: день закончился, а дело не закрыто";
+            };
+            String details = switch (reason) {
+                case START_IGNORED ->
+                    "Человек не отреагировал на стартовый пинг. Бот уже перепингивает с заданным интервалом.";
+                case CHECK_IGNORED ->
+                    "Человек нажал «Пошёл делать», но потом 3 часа игнорирует проверку «Сделал?». Бот уже перепингивает с заданным интервалом.";
+                case END_OF_DAY -> "Сегодня это дело должно было быть закрыто, но подтверждения так и не было.";
+            };
+            String text = header + "\n\n" +
+                    "Дело: " + task.title() + "\n" +
+                    "Кто: " + who + "\n" +
+                    "Плановое время: " + when + "\n\n" +
+                    details + "\n\n" +
+                    "Чтобы не получать такие уведомления: /alerts off";
+            for (UserProfile profile : db.users().loadAll(conn).values()) {
+                if (!profile.alertsEnabled())
+                    continue;
+                telegram.sendMessage(profile.chatId(), text, alertsKeyboard());
+            }
+        } catch (Exception e) {
+            System.err.println("DB error: " + e.getMessage());
         }
     }
 
     private String timezoneText(long chatId) {
-        return "Твоя текущая таймзона: " + synchronizedProfile(chatId).zoneId()
-                + "\nМожно выбрать кнопкой ниже или прислать /tzset Europe/Berlin";
+        try (java.sql.Connection conn = db.getConnection()) {
+            return "Твоя текущая таймзона: " + getProfile(conn, chatId).zoneId()
+                    + "\nМожно выбрать кнопкой ниже или прислать /tzset Europe/Berlin";
+        } catch (java.sql.SQLException e) {
+            return "Ошибка БД";
+        }
     }
 
     private Map<String, Object> timezoneKeyboard() {
@@ -1801,54 +1931,7 @@ public class BotService {
     }
 
     private void handleImportDbFile(UserProfile profile, TelegramClient.Document document) {
-        try {
-            String filePath = telegram.getFilePath(document.fileId());
-            byte[] bytes = telegram.downloadFile(filePath);
-            JsonNode root = stateStore.mapper().readTree(new String(bytes, StandardCharsets.UTF_8));
-            synchronized (this) {
-                if (root.has("catalog") || root.has("state")) {
-                    DatabaseExport exported = stateStore.mapper().treeToValue(root, DatabaseExport.class);
-                    if (exported.catalog() != null) {
-                        this.catalog = exported.catalog();
-                        catalogStore.save(this.catalog);
-                    }
-                    if (exported.state() != null) {
-                        this.state = exported.state();
-                        state.sessions().remove(profile.chatId());
-                        stateStore.save(this.state);
-                    }
-                } else if (root.has("tasks")) {
-                    this.catalog = stateStore.mapper().treeToValue(root, Catalog.class);
-                    catalogStore.save(this.catalog);
-                } else if (root.has("users") || root.has("subscriptions") || root.has("prompts")) {
-                    this.state = stateStore.mapper().treeToValue(root, BotState.class);
-                    state.sessions().remove(profile.chatId());
-                    stateStore.save(this.state);
-                } else {
-                    throw new IllegalArgumentException("Не понял структуру файла");
-                }
-                state.sessions().remove(profile.chatId());
-                saveState();
-            }
-            telegram.sendMessage(profile.chatId(), "Импорт в БД выполнен. Дел: " + catalog.tasks().size()
-                    + ", подписок: " + state.subscriptions().size(), persistentAppKeyboard());
-        } catch (Exception e) {
-            telegram.sendMessage(profile.chatId(), "Не смог импортировать файл в БД: " + e.getMessage());
-        }
-    }
-
-    private void exportDb(long chatId) {
-        try {
-            DatabaseExport exported;
-            synchronized (this) {
-                exported = new DatabaseExport(catalog, state);
-            }
-            byte[] bytes = stateStore.mapper().writeValueAsBytes(exported);
-            telegram.sendDocument(chatId, "reminderbot-export-" + LocalDate.now() + ".json", bytes,
-                    "Экспорт данных бота");
-        } catch (Exception e) {
-            telegram.sendMessage(chatId, "Не смог сделать экспорт: " + e.getMessage());
-        }
+        telegram.sendMessage(profile.chatId(), "Импорт из файла отключен, так как база данных работает напрямую с PostgreSQL.");
     }
 
     private void handleRepingSet(long chatId, String raw) {
@@ -1863,22 +1946,27 @@ public class BotService {
             telegram.sendMessage(chatId, "Допустимо от 1 до 180 минут.");
             return;
         }
-        synchronized (this) {
-            UserProfile old = synchronizedProfile(chatId);
-            state.users().put(chatId, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(),
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserProfile old = getProfile(conn, chatId);
+            db.users().upsert(conn, new UserProfile(old.chatId(), old.username(), old.firstName(), old.zoneId(),
                     old.alertsEnabled(), minutes, old.lastTomorrowReminderForDate()));
-            saveState();
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error: " + e.getMessage());
         }
         telegram.sendMessage(chatId, "Ок, теперь перепинг каждые " + minutes + " мин.");
     }
 
     private String repingText(long chatId) {
-        return "Твой интервал перепинга: " + normalizeRepingMinutes(synchronizedProfile(chatId).repingMinutes())
-                + " мин.\nИзменить: /reping 10";
+        try (java.sql.Connection conn = db.getConnection()) {
+            return "Твой интервал перепинга: " + normalizeRepingMinutes(getProfile(conn, chatId).repingMinutes())
+                    + " мин.\nИзменить: /reping 10";
+        } catch (java.sql.SQLException e) {
+            return "Ошибка БД";
+        }
     }
 
-    private Duration userRepingDelay(long chatId) {
-        return Duration.ofMinutes(normalizeRepingMinutes(synchronizedProfile(chatId).repingMinutes()));
+    private Duration userRepingDelay(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        return Duration.ofMinutes(normalizeRepingMinutes(getProfile(conn, chatId).repingMinutes()));
     }
 
     private int normalizeRepingMinutes(Integer value) {
@@ -1888,54 +1976,61 @@ public class BotService {
     }
 
     private void sendChangeTaskMenu(long chatId) {
-        List<Subscription> own = state.subscriptions().stream()
-                .filter(s -> s.chatId() == chatId && s.active())
-                .toList();
-        if (own.isEmpty()) {
-            telegram.sendMessage(chatId, "У тебя пока нет настроек. Открой /tasks и выбери дело.");
-            return;
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<Subscription> own = db.subscriptions().findAllByChatId(conn, chatId).stream()
+                    .filter(Subscription::active)
+                    .toList();
+            if (own.isEmpty()) {
+                telegram.sendMessage(chatId, "У тебя пока нет настроек. Открой /tasks и выбери дело.");
+                return;
+            }
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            for (Subscription sub : own) {
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task == null)
+                    continue;
+                rows.add(List.of(TelegramClient.button(task.title(), "CHANGE_TASK:" + sub.id())));
+            }
+            telegram.sendMessage(chatId, "Выбери дело, которое хочешь изменить:", TelegramClient.inlineKeyboard(rows));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
-        List<List<Map<String, Object>>> rows = new ArrayList<>();
-        for (Subscription sub : own) {
-            TaskDefinition task = findTask(sub.taskId());
-            if (task == null)
-                continue;
-            rows.add(List.of(TelegramClient.button(task.title(), "CHANGE_TASK:" + sub.id())));
-        }
-        telegram.sendMessage(chatId, "Выбери дело, которое хочешь изменить:", TelegramClient.inlineKeyboard(rows));
     }
 
     private void handleChangeTaskStart(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+                return;
+            }
+            Subscription sub = findUserSubscription(conn, chatId, task.id());
+            if (sub == null) {
+                telegram.sendMessage(chatId, "У тебя нет настройки для этого дела.");
+                return;
+            }
+            handleChangeTaskSelect(conn, chatId, sub.id());
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
-        Subscription sub = findUserSubscription(chatId, task.id());
-        if (sub == null) {
-            telegram.sendMessage(chatId, "У тебя нет настройки для этого дела.");
-            return;
-        }
-        handleChangeTaskSelect(chatId, sub.id());
     }
 
-    private void handleChangeTaskSelect(long chatId, String subscriptionId) {
-        Subscription sub = findSubscription(subscriptionId);
+    private void handleChangeTaskSelect(java.sql.Connection conn, long chatId, String subscriptionId) throws java.sql.SQLException {
+        Subscription sub = findSubscription(conn, subscriptionId);
         if (sub == null || sub.chatId() != chatId) {
             telegram.sendMessage(chatId, "Настройка не найдена.");
             return;
         }
-        TaskDefinition oldTask = findTask(sub.taskId());
+        TaskDefinition oldTask = findTask(conn, sub.taskId());
         if (oldTask == null) {
             telegram.sendMessage(chatId, "Старое дело не найдено.");
             return;
         }
-        state.sessions().put(chatId,
-                new UserSession(SessionType.CHANGE_TASK_SELECT, Map.of("subscriptionId", subscriptionId), null));
-        saveState();
+        db.sessions().upsert(conn, chatId, new UserSession(SessionType.CHANGE_TASK_SELECT,
+                Map.of("subscriptionId", subscriptionId), null));
 
         int pageSize = 10;
-        List<TaskDefinition> tasks = catalog.tasks();
+        List<TaskDefinition> tasks = db.tasks().loadAll(conn);
         List<List<Map<String, Object>>> rows = new ArrayList<>();
         for (int i = 0; i < Math.min(tasks.size(), pageSize); i++) {
             TaskDefinition task = tasks.get(i);
@@ -1949,99 +2044,110 @@ public class BotService {
                 TelegramClient.inlineKeyboard(rows));
     }
 
-    private void handleChangeTaskSelectByText(long chatId, String text) {
-        UserSession session = synchronizedSession(chatId);
-        if (session == null || session.data().get("subscriptionId") == null) {
-            telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /changetask");
-            return;
+    private void handleChangeTaskSelect(long chatId, String subscriptionId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            handleChangeTaskSelect(conn, chatId, subscriptionId);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
-        String subscriptionId = session.data().get("subscriptionId");
-        handleChangeTaskComplete(null, chatId, subscriptionId, text);
     }
 
-    private void handleChangeTaskComplete(String callbackId, long chatId, String subscriptionId, String newTaskRef) {
-        synchronized (this) {
-            Subscription sub = findSubscription(subscriptionId);
-            if (sub == null || sub.chatId() != chatId) {
-                if (callbackId != null)
-                    telegram.answerCallbackQuery(callbackId, "Настройка не найдена");
-                else
-                    telegram.sendMessage(chatId, "Настройка не найдена.");
+
+    private void handleChangeTaskSelectByText(long chatId, String text) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, chatId);
+            if (session == null || session.data().get("subscriptionId") == null) {
+                telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /changetask");
                 return;
             }
-            TaskDefinition newTask = resolveTask(newTaskRef);
-            if (newTask == null) {
-                if (callbackId != null)
-                    telegram.answerCallbackQuery(callbackId, "Дело не найдено");
-                else
-                    telegram.sendMessage(chatId, "Не нашёл дело: " + newTaskRef);
-                return;
-            }
-
-            TaskDefinition oldTask = findTask(sub.taskId());
-            Subscription updated = new Subscription(
-                    sub.id(),
-                    newTask.id(),
-                    sub.chatId(),
-                    sub.dailyTimes(),
-                    sub.dayOfWeek(),
-                    sub.dayOfMonth(),
-                    sub.zoneId(),
-                    sub.nextRunAt(),
-                    sub.active(),
-                    sub.oneTimeDone(),
-                    sub.daysOfWeek(),
-                    sub.daysOfMonth());
-            state.subscriptions().removeIf(s -> s.id().equals(subscriptionId));
-            state.subscriptions().add(updated);
-            state.prompts().removeIf(p -> p.subscriptionId().equals(subscriptionId));
-            state.sessions().remove(chatId);
-            saveState();
-
-            String message = "✅ Дело изменено\n\n" +
-                    "Было: " + (oldTask != null ? oldTask.title() : sub.taskId()) + "\n" +
-                    "Стало: " + newTask.title() + "\n\n" +
-                    humanSchedule(updated, newTask);
-            if (callbackId != null) {
-                telegram.answerCallbackQuery(callbackId, "Изменено");
-            }
-            telegram.sendMessage(chatId, message, persistentAppKeyboard());
+            String subscriptionId = session.data().get("subscriptionId");
+            handleChangeTaskComplete(conn, null, chatId, subscriptionId, text);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
+    }
+
+    private void handleChangeTaskComplete(java.sql.Connection conn, String callbackId, long chatId, String subscriptionId, String newTaskRef) throws java.sql.SQLException {
+        Subscription sub = findSubscription(conn, subscriptionId);
+        if (sub == null || sub.chatId() != chatId) {
+            if (callbackId != null) telegram.answerCallbackQuery(callbackId, "Настройка не найдена");
+            else telegram.sendMessage(chatId, "Настройка не найдена.");
+            return;
+        }
+        TaskDefinition newTask = resolveTask(conn, newTaskRef);
+        if (newTask == null) {
+            if (callbackId != null) telegram.answerCallbackQuery(callbackId, "Дело не найдено");
+            else telegram.sendMessage(chatId, "Не нашёл дело: " + newTaskRef);
+            return;
+        }
+
+        TaskDefinition oldTask = findTask(conn, sub.taskId());
+        Subscription updated = new Subscription(
+                sub.id(),
+                newTask.id(),
+                sub.chatId(),
+                sub.dailyTimes(),
+                sub.dayOfWeek(),
+                sub.dayOfMonth(),
+                sub.zoneId(),
+                sub.nextRunAt(),
+                sub.active(),
+                sub.oneTimeDone(),
+                sub.daysOfWeek(),
+                sub.daysOfMonth());
+        
+        db.subscriptions().upsert(conn, updated);
+        // We delete prompts associated with the old task subscription, they will be recreated by processDueItems if needed
+        db.prompts().deleteBySubscriptionId(conn, subscriptionId);
+        db.sessions().delete(conn, chatId);
+
+        String message = "✅ Дело изменено\n\n" +
+                "Было: " + (oldTask != null ? oldTask.title() : sub.taskId()) + "\n" +
+                "Стало: " + newTask.title() + "\n\n" +
+                humanSchedule(updated, newTask);
+        if (callbackId != null) {
+            telegram.answerCallbackQuery(callbackId, "Изменено");
+        }
+        telegram.sendMessage(chatId, message, persistentAppKeyboard());
     }
 
     private String subscriberStatsText() {
-        Map<String, Integer> taskCounts = new HashMap<>();
-        for (Subscription sub : state.subscriptions()) {
-            if (sub.active()) {
-                taskCounts.merge(sub.taskId(), 1, Integer::sum);
+        try (java.sql.Connection conn = db.getConnection()) {
+            Map<String, Integer> taskCounts = new HashMap<>();
+            for (Subscription sub : db.subscriptions().loadAll(conn)) {
+                if (sub.active()) {
+                    taskCounts.merge(sub.taskId(), 1, Integer::sum);
+                }
             }
+
+            if (taskCounts.isEmpty()) {
+                return "Пока нет активных подписок.";
+            }
+
+            List<Map.Entry<String, Integer>> sorted = taskCounts.entrySet().stream()
+                    .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                    .toList();
+
+            StringBuilder sb = new StringBuilder("📊 Статистика подписчиков:\n\n");
+            int maxCount = sorted.get(0).getValue();
+
+            for (Map.Entry<String, Integer> entry : sorted) {
+                TaskDefinition task = findTask(conn, entry.getKey());
+                String title = task != null ? task.title() : entry.getKey();
+                int count = entry.getValue();
+                int barLength = maxCount > 0 ? (count * 20) / maxCount : 0;
+                String bar = "█".repeat(Math.max(1, barLength));
+
+                sb.append(title).append("\n");
+                sb.append(bar).append(" ").append(count).append(" чел.\n\n");
+            }
+
+            long total = db.subscriptions().loadAll(conn).stream().filter(Subscription::active).count();
+            sb.append("Всего активных подписок: ").append(total);
+            return sb.toString();
+        } catch (java.sql.SQLException e) {
+            return "Ошибка БД";
         }
-
-        if (taskCounts.isEmpty()) {
-            return "Пока нет активных подписок.";
-        }
-
-        List<Map.Entry<String, Integer>> sorted = taskCounts.entrySet().stream()
-                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-                .toList();
-
-        StringBuilder sb = new StringBuilder("📊 Статистика подписчиков:\n\n");
-        int maxCount = sorted.get(0).getValue();
-
-        for (Map.Entry<String, Integer> entry : sorted) {
-            TaskDefinition task = findTask(entry.getKey());
-            String title = task != null ? task.title() : entry.getKey();
-            int count = entry.getValue();
-            int barLength = maxCount > 0 ? (count * 20) / maxCount : 0;
-            String bar = "█".repeat(Math.max(1, barLength));
-
-            sb.append(title).append("\n");
-            sb.append(bar).append(" ").append(count).append(" чел.\n\n");
-        }
-
-        sb.append("Всего активных подписок: ")
-                .append(state.subscriptions().stream().filter(Subscription::active).count());
-        return sb.toString();
     }
 
     private void sendEditTaskMenu(long chatId) {
@@ -2049,64 +2155,74 @@ public class BotService {
     }
 
     private void sendEditTaskMenu(long chatId, int page, Integer messageId) {
-        List<TaskDefinition> tasks = catalog.tasks();
-        if (tasks.isEmpty()) {
-            telegram.sendMessage(chatId, "Каталог пуст.");
-            return;
-        }
-        int pageSize = 6;
-        int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
-        int safePage = Math.max(0, Math.min(page, totalPages - 1));
-        int from = safePage * pageSize;
-        int to = Math.min(tasks.size(), from + pageSize);
-        
-        StringBuilder sb = new StringBuilder("Редактирование дел — страница ").append(safePage + 1).append("/").append(totalPages)
-                .append("\n\nВыбери дело для редактирования или пришли номер:");
-        
-        List<List<Map<String, Object>>> rows = new ArrayList<>();
-        for (int i = from; i < to; i++) {
-            TaskDefinition task = tasks.get(i);
-            rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(task.title()), "EDIT_TASK:" + (i + 1))));
-        }
-        
-        List<Map<String, Object>> nav = new ArrayList<>();
-        if (safePage > 0)
-            nav.add(TelegramClient.button("◀️", "EDIT_TASK_PAGE:" + (safePage - 1)));
-        if (safePage < totalPages - 1)
-            nav.add(TelegramClient.button("▶️", "EDIT_TASK_PAGE:" + (safePage + 1)));
-        if (!nav.isEmpty())
-            rows.add(nav);
-        
-        if (messageId != null) {
-            telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
-        } else {
-            telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+            if (tasks.isEmpty()) {
+                telegram.sendMessage(chatId, "Каталог пуст.");
+                return;
+            }
+            int pageSize = 6;
+            int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+            int safePage = Math.max(0, Math.min(page, totalPages - 1));
+            int from = safePage * pageSize;
+            int to = Math.min(tasks.size(), from + pageSize);
+            
+            StringBuilder sb = new StringBuilder("Редактирование дел — страница ").append(safePage + 1).append("/").append(totalPages)
+                    .append("\n\nВыбери дело для редактирования или пришли номер:");
+            
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            for (int i = from; i < to; i++) {
+                TaskDefinition task = tasks.get(i);
+                rows.add(List.of(TelegramClient.button((i + 1) + ". " + trimTitle(task.title()), "EDIT_TASK:" + (i + 1))));
+            }
+            
+            List<Map<String, Object>> nav = new ArrayList<>();
+            if (safePage > 0)
+                nav.add(TelegramClient.button("◀️", "EDIT_TASK_PAGE:" + (safePage - 1)));
+            if (safePage < totalPages - 1)
+                nav.add(TelegramClient.button("▶️", "EDIT_TASK_PAGE:" + (safePage + 1)));
+            if (!nav.isEmpty())
+                rows.add(nav);
+            
+            if (messageId != null) {
+                telegram.editMessageText(chatId, messageId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+            } else {
+                telegram.sendMessage(chatId, sb.toString(), TelegramClient.inlineKeyboard(rows));
+            }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
     }
 
     private void handleEditTaskStart(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
-            return;
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = resolveTask(conn, ref);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
+                return;
+            }
+            handleEditTaskSelect(conn, chatId, String.valueOf(taskNumber(conn, task.id())));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
-        handleEditTaskSelect(chatId, String.valueOf(taskNumber(task.id())));
     }
 
     private void handleEditTaskSelectByText(long chatId, String text) {
-        handleEditTaskSelect(chatId, text.trim());
+        try (java.sql.Connection conn = db.getConnection()) {
+            handleEditTaskSelect(conn, chatId, text.trim());
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
     }
 
-    private void handleEditTaskSelect(long chatId, String ref) {
-        TaskDefinition task = resolveTask(ref);
+    private void handleEditTaskSelect(java.sql.Connection conn, long chatId, String ref) throws java.sql.SQLException {
+        TaskDefinition task = resolveTask(conn, ref);
         if (task == null) {
             telegram.sendMessage(chatId, "Не нашёл дело: " + ref);
             return;
         }
 
-        state.sessions().put(chatId,
-                new UserSession(SessionType.EDIT_TASK_PROPERTY, Map.of("taskId", task.id()), null));
-        saveState();
+        db.sessions().upsert(conn, chatId, new UserSession(SessionType.EDIT_TASK_PROPERTY, Map.of("taskId", task.id()), null));
 
         String info = String.format("""
                 Дело: %s
@@ -2136,43 +2252,46 @@ public class BotService {
     }
 
     private void handleEditTaskProperty(long chatId, String taskId, String property) {
-        TaskDefinition task = findTask(taskId);
-        if (task == null) {
-            telegram.sendMessage(chatId, "Дело не найдено.");
-            return;
-        }
-
-        state.sessions().put(chatId, new UserSession(SessionType.EDIT_TASK_VALUE,
-                Map.of("taskId", taskId, "property", property), null));
-        saveState();
-
-        String prompt = switch (property) {
-            case "title" -> "Пришли новое название дела:";
-            case "interval" -> {
-                if (task.schedule() == null) {
-                    yield "Это дело без расписания. Нельзя изменить интервал.";
-                }
-                yield "Пришли новый интервал (число). Текущий: " + task.schedule().interval();
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = findTask(conn, taskId);
+            if (task == null) {
+                telegram.sendMessage(chatId, "Дело не найдено.");
+                return;
             }
-            case "note" -> "Пришли новую заметку или - для удаления:";
-            default -> "Неизвестное свойство.";
-        };
 
-        telegram.sendMessage(chatId, prompt);
+            db.sessions().upsert(conn, chatId, new UserSession(SessionType.EDIT_TASK_VALUE,
+                    Map.of("taskId", taskId, "property", property), null));
+
+            String prompt = switch (property) {
+                case "title" -> "Пришли новое название дела:";
+                case "interval" -> {
+                    if (task.schedule() == null) {
+                        yield "Это дело без расписания. Нельзя изменить интервал.";
+                    }
+                    yield "Пришли новый интервал (число). Текущий: " + task.schedule().interval();
+                }
+                case "note" -> "Пришли новую заметку или - для удаления:";
+                default -> "Неизвестное свойство.";
+            };
+
+            telegram.sendMessage(chatId, prompt);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
     }
 
     private void handleEditTaskValue(long chatId, String value) {
-        UserSession session = synchronizedSession(chatId);
-        if (session == null || session.data().get("taskId") == null || session.data().get("property") == null) {
-            telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /edittask");
-            return;
-        }
+        try (java.sql.Connection conn = db.getConnection()) {
+            UserSession session = getSession(conn, chatId);
+            if (session == null || session.data().get("taskId") == null || session.data().get("property") == null) {
+                telegram.sendMessage(chatId, "Сессия потеряна. Начни заново через /edittask");
+                return;
+            }
 
-        String taskId = session.data().get("taskId");
-        String property = session.data().get("property");
+            String taskId = session.data().get("taskId");
+            String property = session.data().get("property");
 
-        synchronized (this) {
-            TaskDefinition task = findTask(taskId);
+            TaskDefinition task = findTask(conn, taskId);
             if (task == null) {
                 telegram.sendMessage(chatId, "Дело не найдено.");
                 return;
@@ -2218,71 +2337,87 @@ public class BotService {
             };
 
             if (updated != null) {
-                catalog.tasks().removeIf(t -> t.id().equals(taskId));
-                catalog.tasks().add(updated);
-                catalogStore.save(catalog);
-                state.sessions().remove(chatId);
-                saveState();
-
+                db.tasks().upsert(conn, updated);
+                db.sessions().delete(conn, chatId);
                 telegram.sendMessage(chatId, "✅ Дело обновлено:\n\n" + updated.title() + "\n" + frequencyText(updated),
                         persistentAppKeyboard());
             }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
         }
     }
 
     private String taskBoardText() {
-        List<TaskDefinition> tasks = catalog.tasks();
-        if (tasks.isEmpty()) {
-            return "Каталог пуст.";
-        }
-
-        Map<String, List<Subscription>> taskSubs = new HashMap<>();
-        for (Subscription sub : state.subscriptions()) {
-            if (sub.active()) {
-                taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
+        try (java.sql.Connection conn = db.getConnection()) {
+            List<TaskDefinition> tasks = db.tasks().loadAll(conn);
+            if (tasks.isEmpty()) {
+                return "Каталог пуст.";
             }
-        }
 
-        List<String> free = new ArrayList<>();
-        List<String> taken = new ArrayList<>();
-
-        for (TaskDefinition task : tasks) {
-            List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
-            int slots = task.recommendedSlots();
-
-            if (subs.isEmpty()) {
-                free.add("• " + task.title() + " (0/" + slots + ")");
-            } else if (subs.size() < slots) {
-                String who = subs.stream()
-                        .map(s -> displayUser(s.chatId()).split(" ")[0])
-                        .collect(Collectors.joining(", "));
-                taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") — " + who);
-            } else {
-                String who = subs.stream()
-                        .map(s -> displayUser(s.chatId()).split(" ")[0])
-                        .collect(Collectors.joining(", "));
-                taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") ✅ — " + who);
+            Map<String, List<Subscription>> taskSubs = new HashMap<>();
+            for (Subscription sub : db.subscriptions().loadAll(conn)) {
+                if (sub.active()) {
+                    taskSubs.computeIfAbsent(sub.taskId(), k -> new ArrayList<>()).add(sub);
+                }
             }
+
+            List<String> free = new ArrayList<>();
+            List<String> taken = new ArrayList<>();
+
+            for (TaskDefinition task : tasks) {
+                List<Subscription> subs = taskSubs.getOrDefault(task.id(), List.of());
+                int slots = task.recommendedSlots();
+
+                if (subs.isEmpty()) {
+                    free.add("• " + task.title() + " (0/" + slots + ")");
+                } else if (subs.size() < slots) {
+                    String who = subs.stream()
+                            .map(s -> {
+                                try {
+                                    return displayUser(conn, s.chatId()).split(" ")[0];
+                                } catch (java.sql.SQLException e) {
+                                    return "Ошибка";
+                                }
+                            })
+                            .collect(Collectors.joining(", "));
+                    if (who.isEmpty()) who = "кто-то";
+                    taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") — " + who);
+                } else {
+                    String who = subs.stream()
+                            .map(s -> {
+                                try {
+                                    return displayUser(conn, s.chatId()).split(" ")[0];
+                                } catch (java.sql.SQLException e) {
+                                    return "Ошибка";
+                                }
+                            })
+                            .collect(Collectors.joining(", "));
+                    if (who.isEmpty()) who = "кто-то";
+                    taken.add("• " + task.title() + " (" + subs.size() + "/" + slots + ") ✅ — " + who);
+                }
+            }
+
+            StringBuilder sb = new StringBuilder("📋 Доска дел:\n\n");
+
+            if (!taken.isEmpty()) {
+                sb.append("🔒 Забранные дела:\n");
+                sb.append(String.join("\n", taken));
+                sb.append("\n\n");
+            }
+
+            if (!free.isEmpty()) {
+                sb.append("🆓 Свободные дела:\n");
+                sb.append(String.join("\n", free));
+            }
+
+            return sb.toString().strip();
+        } catch (java.sql.SQLException e) {
+            return "Ошибка БД";
         }
-
-        StringBuilder sb = new StringBuilder("📋 Доска дел:\n\n");
-
-        if (!taken.isEmpty()) {
-            sb.append("🔒 Забранные дела:\n");
-            sb.append(String.join("\n", taken));
-            sb.append("\n\n");
-        }
-
-        if (!free.isEmpty()) {
-            sb.append("🆓 Свободные дела:\n");
-            sb.append(String.join("\n", free));
-        }
-
-        return sb.toString().strip();
     }
 
-    private void collectTomorrowReminders(Instant now, List<TomorrowReminderAction> out) {
-        for (UserProfile profile : new ArrayList<>(state.users().values())) {
+    private void collectTomorrowReminders(java.sql.Connection conn, Instant now, List<TomorrowReminderAction> out) throws java.sql.SQLException {
+        for (UserProfile profile : db.users().loadAll(conn).values()) {
             ZoneId zone = ZoneId.of(profile.zoneId());
             ZonedDateTime localNow = ZonedDateTime.ofInstant(now, zone);
             LocalTime time = localNow.toLocalTime();
@@ -2295,10 +2430,10 @@ public class BotService {
                 continue;
             }
             List<String> items = new ArrayList<>();
-            for (Subscription sub : state.subscriptions()) {
-                if (sub.chatId() != profile.chatId() || !sub.active() || sub.oneTimeDone() || sub.nextRunAt() == null)
+            for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
+                if (!sub.active() || sub.oneTimeDone() || sub.nextRunAt() == null)
                     continue;
-                TaskDefinition task = findTask(sub.taskId());
+                TaskDefinition task = findTask(conn, sub.taskId());
                 if (task == null || task.kind() == TaskKind.MANUAL)
                     continue;
                 LocalDate dueDate = ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate();
@@ -2310,7 +2445,7 @@ public class BotService {
             UserProfile updated = new UserProfile(profile.chatId(), profile.username(), profile.firstName(),
                     profile.zoneId(), profile.alertsEnabled(), normalizeRepingMinutes(profile.repingMinutes()),
                     tomorrow.toString());
-            state.users().put(profile.chatId(), updated);
+            db.users().upsert(conn, updated);
             if (!items.isEmpty()) {
                 String text = "📋 Завтра у тебя такие дела:\n\n" + String.join("\n", items);
                 out.add(new TomorrowReminderAction(profile.chatId(), text));
@@ -2318,68 +2453,68 @@ public class BotService {
         }
     }
 
-    private void cleanupOldCompletions(Instant now) {
-        Instant cutoff = now.minus(Duration.ofDays(14));
-        state.completions().removeIf(c -> c.completedAt() != null && c.completedAt().isBefore(cutoff));
-    }
 
     private String todayBoardText() {
-        Instant now = Instant.now();
-        List<String> sections = new ArrayList<>();
-        List<UserProfile> users = new ArrayList<>(state.users().values()).stream()
-                .sorted(Comparator.comparing(this::displayNameForSort)).toList();
-        for (UserProfile profile : users) {
-            ZoneId zone = ZoneId.of(profile.zoneId());
-            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
-            List<String> rows = new ArrayList<>();
-            for (Subscription sub : state.subscriptions()) {
-                if (sub.chatId() != profile.chatId() || !sub.active())
-                    continue;
-                TaskDefinition task = findTask(sub.taskId());
-                if (task == null || task.kind() == TaskKind.MANUAL)
-                    continue;
-                ActivePrompt prompt = findTodayPrompt(sub.id(), today, zone);
-                List<CompletionRecord> done = findTodayCompletions(sub.id(), today, zone);
-                boolean hasTodayFuture = sub.nextRunAt() != null
-                        && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
-                if (prompt == null && done.isEmpty() && !hasTodayFuture)
-                    continue;
-                String status;
-                if (prompt != null) {
-                    status = switch (prompt.state()) {
-                        case STATE_SNOOZED ->
-                            "отложено до " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
-                        case STATE_GOING_DOING_DELAY -> "пошёл делать, проверка в "
-                                + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
-                        case STATE_CHECK_WAITING -> "ждёт подтверждения";
-                        default -> "ждёт ответа";
-                    };
-                } else if (!done.isEmpty()) {
-                    CompletionRecord last = done.get(done.size() - 1);
-                    status = "сделано в " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(last.completedAt(), zone));
-                } else {
-                    status = "запланировано на " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+        try (java.sql.Connection conn = db.getConnection()) {
+            Instant now = Instant.now();
+            List<String> sections = new ArrayList<>();
+            List<UserProfile> users = new ArrayList<>(db.users().loadAll(conn).values()).stream()
+                    .sorted(Comparator.comparing(this::displayNameForSort)).toList();
+            for (UserProfile profile : users) {
+                ZoneId zone = ZoneId.of(profile.zoneId());
+                LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+                List<String> rows = new ArrayList<>();
+                for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
+                    if (!sub.active())
+                        continue;
+                    TaskDefinition task = findTask(conn, sub.taskId());
+                    if (task == null || task.kind() == TaskKind.MANUAL)
+                        continue;
+                    ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
+                    List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
+                    boolean hasTodayFuture = sub.nextRunAt() != null
+                            && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
+                    if (prompt == null && done.isEmpty() && !hasTodayFuture)
+                        continue;
+                    String status;
+                    if (prompt != null) {
+                        status = switch (prompt.state()) {
+                            case STATE_SNOOZED ->
+                                "отложено до " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
+                            case STATE_GOING_DOING_DELAY -> "пошёл делать, проверка в "
+                                    + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
+                            case STATE_CHECK_WAITING -> "ждёт подтверждения";
+                            default -> "ждёт ответа";
+                        };
+                    } else if (!done.isEmpty()) {
+                        CompletionRecord last = done.get(done.size() - 1);
+                        status = "сделано в " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(last.completedAt(), zone));
+                    } else {
+                        status = "запланировано на " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+                    }
+                    rows.add("• " + task.title() + " — " + status);
                 }
-                rows.add("• " + task.title() + " — " + status);
+                if (!rows.isEmpty()) {
+                    sections.add(displayUser(conn, profile.chatId()) + "\n" + String.join("\n", rows));
+                }
             }
-            if (!rows.isEmpty()) {
-                sections.add(displayUser(profile.chatId()) + "\n" + String.join("\n", rows));
-            }
+            return sections.isEmpty() ? "На сегодня ни у кого нет активных дел."
+                    : "Дела на сегодня:\n\n" + String.join("\n\n", sections);
+        } catch (java.sql.SQLException e) {
+            return "Ошибка БД";
         }
-        return sections.isEmpty() ? "На сегодня ни у кого нет активных дел."
-                : "Дела на сегодня:\n\n" + String.join("\n\n", sections);
     }
 
-    private ActivePrompt findTodayPrompt(String subscriptionId, LocalDate date, ZoneId zone) {
-        return state.prompts().stream()
+    private ActivePrompt findTodayPrompt(java.sql.Connection conn, String subscriptionId, LocalDate date, ZoneId zone) throws java.sql.SQLException {
+        return db.prompts().loadAll(conn).stream()
                 .filter(p -> p.subscriptionId().equals(subscriptionId))
                 .filter(p -> ZonedDateTime.ofInstant(p.scheduledFor(), zone).toLocalDate().equals(date))
                 .max(Comparator.comparing(ActivePrompt::scheduledFor))
                 .orElse(null);
     }
 
-    private List<CompletionRecord> findTodayCompletions(String subscriptionId, LocalDate date, ZoneId zone) {
-        return state.completions().stream()
+    private List<CompletionRecord> findTodayCompletions(java.sql.Connection conn, String subscriptionId, LocalDate date, ZoneId zone) throws java.sql.SQLException {
+        return db.completions().loadAll(conn, Instant.now().minus(Duration.ofDays(7)), 100).stream()
                 .filter(c -> c.subscriptionId().equals(subscriptionId))
                 .filter(c -> ZonedDateTime.ofInstant(c.scheduledFor(), zone).toLocalDate().equals(date))
                 .sorted(Comparator.comparing(CompletionRecord::completedAt))
@@ -2392,19 +2527,7 @@ public class BotService {
         return profile.firstName() == null ? String.valueOf(profile.chatId()) : profile.firstName();
     }
 
-    private void replaceSubscription(Subscription updated) {
-        state.subscriptions().removeIf(s -> s.chatId() == updated.chatId() && s.taskId().equals(updated.taskId()));
-        state.subscriptions().add(updated);
-    }
 
-    private void replacePrompt(ActivePrompt updated) {
-        state.prompts().removeIf(p -> p.id().equals(updated.id()));
-        state.prompts().add(updated);
-    }
-
-    private void saveState() {
-        stateStore.save(state);
-    }
 
     private String startText() {
         return """
@@ -2464,12 +2587,13 @@ public class BotService {
                 """;
     }
 
-    private String userZone(long chatId) {
-        return synchronizedProfile(chatId).zoneId();
+    private String userZone(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        UserProfile p = getProfile(conn, chatId);
+        return p != null ? p.zoneId() : defaultZone.getId();
     }
 
-    private String displayUser(long chatId) {
-        UserProfile user = synchronizedProfile(chatId);
+    private String displayUser(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
+        UserProfile user = getProfile(conn, chatId);
         if (user.username() != null && !user.username().isBlank())
             return "@" + user.username();
         return user.firstName() + " (" + chatId + ")";

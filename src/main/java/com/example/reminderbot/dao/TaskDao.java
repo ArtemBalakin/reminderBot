@@ -2,17 +2,12 @@ package com.example.reminderbot.dao;
 
 import com.example.reminderbot.model.*;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
 public class TaskDao {
-    private final DataSource dataSource;
-
-    public TaskDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
+    public TaskDao() {}
 
     public List<TaskDefinition> loadAll(Connection conn) throws SQLException {
         List<TaskDefinition> tasks = new ArrayList<>();
@@ -35,6 +30,31 @@ public class TaskDao {
             }
         }
         return tasks;
+    }
+
+    public TaskDefinition findById(Connection conn, String id) throws SQLException {
+        String sql = "SELECT id, title, kind, frequency_unit, frequency_interval, recommended_slots, note FROM tasks WHERE id = ? AND active = true";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String unitStr = rs.getString("frequency_unit");
+                    Integer interval = (Integer) rs.getObject("frequency_interval");
+                    ScheduleRule schedule = unitStr != null && interval != null
+                            ? new ScheduleRule(FrequencyUnit.valueOf(unitStr), interval)
+                            : null;
+                    return new TaskDefinition(
+                            rs.getString("id"),
+                            rs.getString("title"),
+                            TaskKind.valueOf(rs.getString("kind")),
+                            schedule,
+                            rs.getInt("recommended_slots"),
+                            rs.getString("note")
+                    );
+                }
+            }
+        }
+        return null;
     }
 
     public void upsert(Connection conn, TaskDefinition task) throws SQLException {

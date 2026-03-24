@@ -2,18 +2,13 @@ package com.example.reminderbot.dao;
 
 import com.example.reminderbot.model.ActivePrompt;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 public class PromptDao {
-    private final DataSource dataSource;
-
-    public PromptDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
+    public PromptDao() {}
 
     public List<ActivePrompt> loadAll(Connection conn) throws SQLException {
         List<ActivePrompt> prompts = new ArrayList<>();
@@ -25,25 +20,91 @@ public class PromptDao {
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                Timestamp nextPing = rs.getTimestamp("next_ping_at");
-                Timestamp stageStarted = rs.getTimestamp("stage_started_at");
-                prompts.add(new ActivePrompt(
-                        rs.getString("id"),
-                        rs.getString("subscription_id"),
-                        rs.getString("task_id"),
-                        rs.getLong("chat_id"),
-                        rs.getTimestamp("scheduled_for").toInstant(),
-                        nextPing != null ? nextPing.toInstant() : null,
-                        rs.getString("state"),
-                        (Integer) rs.getObject("message_id"),
-                        rs.getInt("alert_broadcast_count"),
-                        rs.getBoolean("end_of_day_alert_sent"),
-                        stageStarted != null ? stageStarted.toInstant() : null,
-                        rs.getBoolean("current_stage_alert_sent")
-                ));
+                prompts.add(readRow(rs));
             }
         }
         return prompts;
+    }
+
+    private ActivePrompt readRow(ResultSet rs) throws SQLException {
+        Timestamp nextPing = rs.getTimestamp("next_ping_at");
+        Timestamp stageStarted = rs.getTimestamp("stage_started_at");
+        return new ActivePrompt(
+                rs.getString("id"),
+                rs.getString("subscription_id"),
+                rs.getString("task_id"),
+                rs.getLong("chat_id"),
+                rs.getTimestamp("scheduled_for").toInstant(),
+                nextPing != null ? nextPing.toInstant() : null,
+                rs.getString("state"),
+                (Integer) rs.getObject("message_id"),
+                rs.getInt("alert_broadcast_count"),
+                rs.getBoolean("end_of_day_alert_sent"),
+                stageStarted != null ? stageStarted.toInstant() : null,
+                rs.getBoolean("current_stage_alert_sent")
+        );
+    }
+
+    public List<ActivePrompt> findAllByChatId(Connection conn, long chatId) throws SQLException {
+        List<ActivePrompt> prompts = new ArrayList<>();
+        String sql = """
+            SELECT id, subscription_id, task_id, chat_id, scheduled_for, next_ping_at, state, 
+                   message_id, alert_broadcast_count, end_of_day_alert_sent, stage_started_at, current_stage_alert_sent
+            FROM prompts WHERE chat_id = ? ORDER BY scheduled_for
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, chatId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) prompts.add(readRow(rs));
+            }
+        }
+        return prompts;
+    }
+
+    public ActivePrompt findById(Connection conn, String promptId) throws SQLException {
+        String sql = """
+            SELECT id, subscription_id, task_id, chat_id, scheduled_for, next_ping_at, state, 
+                   message_id, alert_broadcast_count, end_of_day_alert_sent, stage_started_at, current_stage_alert_sent
+            FROM prompts WHERE id = ? LIMIT 1
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, promptId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return readRow(rs);
+            }
+        }
+        return null;
+    }
+
+    public List<ActivePrompt> findDuePing(Connection conn, Instant cutoff) throws SQLException {
+        List<ActivePrompt> prompts = new ArrayList<>();
+        String sql = """
+            SELECT id, subscription_id, task_id, chat_id, scheduled_for, next_ping_at, state, 
+                   message_id, alert_broadcast_count, end_of_day_alert_sent, stage_started_at, current_stage_alert_sent
+            FROM prompts WHERE next_ping_at <= ? ORDER BY scheduled_for
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) prompts.add(readRow(rs));
+            }
+        }
+        return prompts;
+    }
+
+    public ActivePrompt findBySubscriptionId(Connection conn, String subId) throws SQLException {
+        String sql = """
+            SELECT id, subscription_id, task_id, chat_id, scheduled_for, next_ping_at, state, 
+                   message_id, alert_broadcast_count, end_of_day_alert_sent, stage_started_at, current_stage_alert_sent
+            FROM prompts WHERE subscription_id = ? LIMIT 1
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, subId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return readRow(rs);
+            }
+        }
+        return null;
     }
 
     public void upsert(Connection conn, ActivePrompt prompt) throws SQLException {
@@ -86,6 +147,13 @@ public class PromptDao {
     public void delete(Connection conn, String promptId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE id = ?")) {
             ps.setString(1, promptId);
+            ps.executeUpdate();
+        }
+    }
+
+    public void deleteBySubscriptionId(Connection conn, String subscriptionId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE subscription_id = ?")) {
+            ps.setString(1, subscriptionId);
             ps.executeUpdate();
         }
     }

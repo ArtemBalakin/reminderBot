@@ -1,14 +1,9 @@
 package com.example.reminderbot.dao;
 
-import javax.sql.DataSource;
 import java.sql.*;
 
 public class AppMetaDao {
-    private final DataSource dataSource;
-
-    public AppMetaDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
+    public AppMetaDao() {}
 
     public long getLastUpdateId(Connection conn) throws SQLException {
         String sql = "SELECT meta_value FROM app_meta WHERE meta_key = 'last_update_id'";

@@ -1,7 +1,7 @@
 package com.example.reminderbot.model;
 
 import java.time.Instant;
-import java.util.ArrayList;
+
 import java.util.List;
 
 public record Subscription(
@@ -19,18 +19,18 @@ public record Subscription(
         List<Integer> daysOfMonth
 ) {
     public Subscription {
-        dailyTimes = dailyTimes == null ? new ArrayList<>() : new ArrayList<>(dailyTimes);
+        dailyTimes = dailyTimes == null ? List.of() : List.copyOf(dailyTimes);
         
         List<String> dws = daysOfWeek;
         if (dws == null) {
-            dws = dayOfWeek != null ? List.of(dayOfWeek) : new ArrayList<>();
+            dws = dayOfWeek != null ? List.of(dayOfWeek) : List.of();
         }
-        daysOfWeek = new ArrayList<>(dws);
+        daysOfWeek = List.copyOf(dws);
         
         List<Integer> dms = daysOfMonth;
         if (dms == null) {
-            dms = dayOfMonth != null ? List.of(dayOfMonth) : new ArrayList<>();
+            dms = dayOfMonth != null ? List.of(dayOfMonth) : List.of();
         }
-        daysOfMonth = new ArrayList<>(dms);
+        daysOfMonth = List.copyOf(dms);
     }
 }

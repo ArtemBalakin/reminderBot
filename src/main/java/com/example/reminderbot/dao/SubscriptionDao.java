@@ -2,7 +2,6 @@ package com.example.reminderbot.dao;
 
 import com.example.reminderbot.model.Subscription;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -10,11 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class SubscriptionDao {
-    private final DataSource dataSource;
-
-    public SubscriptionDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
+    public SubscriptionDao() {}
 
     public List<Subscription> loadAll(Connection conn) throws SQLException {
         List<Subscription> subscriptions = new ArrayList<>();
@@ -27,28 +22,88 @@ public class SubscriptionDao {
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                String id = rs.getString("id");
-                List<String> dailyTimes = loadDailyTimes(conn, id);
-                Timestamp nextRunTs = rs.getTimestamp("next_run_at");
-                String dwsStr = rs.getString("days_of_week");
-                List<String> dws = dwsStr == null || dwsStr.isBlank() ? null : List.of(dwsStr.split(","));
-                String dmsStr = rs.getString("days_of_month");
-                List<Integer> dms = dmsStr == null || dmsStr.isBlank() ? null : java.util.Arrays.stream(dmsStr.split(",")).map(Integer::parseInt).toList();
+                subscriptions.add(readRow(conn, rs));
+            }
+        }
+        return subscriptions;
+    }
 
-                subscriptions.add(new Subscription(
-                        id,
-                        rs.getString("task_id"),
-                        rs.getLong("chat_id"),
-                        dailyTimes,
-                        rs.getString("day_of_week"),
-                        (Integer) rs.getObject("day_of_month"),
-                        rs.getString("zone_id"),
-                        nextRunTs != null ? nextRunTs.toInstant() : null,
-                        rs.getBoolean("active"),
-                        rs.getBoolean("one_time_done"),
-                        dws,
-                        dms
-                ));
+    private Subscription readRow(Connection conn, ResultSet rs) throws SQLException {
+        String id = rs.getString("id");
+        List<String> dailyTimes = loadDailyTimes(conn, id);
+        Timestamp nextRunTs = rs.getTimestamp("next_run_at");
+        String dwsStr = rs.getString("days_of_week");
+        List<String> dws = dwsStr == null || dwsStr.isBlank() ? null : List.of(dwsStr.split(","));
+        String dmsStr = rs.getString("days_of_month");
+        List<Integer> dms = dmsStr == null || dmsStr.isBlank() ? null : java.util.Arrays.stream(dmsStr.split(",")).map(Integer::parseInt).toList();
+
+        return new Subscription(
+                id,
+                rs.getString("task_id"),
+                rs.getLong("chat_id"),
+                dailyTimes,
+                rs.getString("day_of_week"),
+                (Integer) rs.getObject("day_of_month"),
+                rs.getString("zone_id"),
+                nextRunTs != null ? nextRunTs.toInstant() : null,
+                rs.getBoolean("active"),
+                rs.getBoolean("one_time_done"),
+                dws,
+                dms
+        );
+    }
+
+    public List<Subscription> findAllByChatId(Connection conn, long chatId) throws SQLException {
+        List<Subscription> subscriptions = new ArrayList<>();
+        String sql = """
+            SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
+                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+            FROM subscriptions s
+            WHERE s.chat_id = ?
+            ORDER BY s.created_at
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, chatId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) subscriptions.add(readRow(conn, rs));
+            }
+        }
+        return subscriptions;
+    }
+
+    public Subscription findById(Connection conn, String id) throws SQLException {
+        String sql = """
+            SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
+                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+            FROM subscriptions s
+            WHERE s.id = ?
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return readRow(conn, rs);
+            }
+        }
+        return null;
+    }
+
+    public List<Subscription> findDue(Connection conn, Instant cutoff) throws SQLException {
+        List<Subscription> subscriptions = new ArrayList<>();
+        String sql = """
+            SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month, s.zone_id, 
+                   s.next_run_at, s.active, s.one_time_done, s.days_of_week, s.days_of_month
+            FROM subscriptions s
+            LEFT JOIN prompts p ON s.id = p.subscription_id
+            WHERE s.active = true 
+              AND s.one_time_done = false
+              AND s.next_run_at <= ? 
+              AND p.id IS NULL
+            ORDER BY s.next_run_at
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) subscriptions.add(readRow(conn, rs));
             }
         }
         return subscriptions;

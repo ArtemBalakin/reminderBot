@@ -2,44 +2,43 @@ package com.example.reminderbot.dao;
 
 import com.example.reminderbot.model.CompletionRecord;
 
-import javax.sql.DataSource;
 import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 public class CompletionDao {
-    private final DataSource dataSource;
+    public CompletionDao() {}
 
-    public CompletionDao(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-
-    public List<CompletionRecord> loadAll(Connection conn) throws SQLException {
+    public List<CompletionRecord> loadAll(Connection conn, Instant cutoff, int limit) throws SQLException {
         List<CompletionRecord> completions = new ArrayList<>();
         String sql = """
             SELECT prompt_id, subscription_id, task_id, chat_id, scheduled_for, completed_at
             FROM completion_records
-            WHERE completed_at > CURRENT_TIMESTAMP - INTERVAL '14 days'
+            WHERE completed_at > ?
             ORDER BY completed_at DESC
-            LIMIT 500
+            LIMIT ?
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                completions.add(new CompletionRecord(
-                        rs.getString("prompt_id"),
-                        rs.getString("subscription_id"),
-                        rs.getString("task_id"),
-                        rs.getLong("chat_id"),
-                        rs.getTimestamp("scheduled_for").toInstant(),
-                        rs.getTimestamp("completed_at").toInstant()
-                ));
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    completions.add(new CompletionRecord(
+                            rs.getString("prompt_id"),
+                            rs.getString("subscription_id"),
+                            rs.getString("task_id"),
+                            rs.getLong("chat_id"),
+                            rs.getTimestamp("scheduled_for").toInstant(),
+                            rs.getTimestamp("completed_at").toInstant()
+                    ));
+                }
             }
         }
         return completions;
     }
 
-    public void insert(Connection conn, CompletionRecord record) throws SQLException {
+    public void upsert(Connection conn, CompletionRecord record) throws SQLException {
         String sql = """
             INSERT INTO completion_records (prompt_id, subscription_id, task_id, chat_id, scheduled_for, completed_at, outcome)
             VALUES (?, ?, ?, ?, ?, ?, 'DONE')

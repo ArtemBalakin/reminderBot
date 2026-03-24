@@ -2,14 +2,9 @@ package com.example.reminderbot;
 
 import com.example.reminderbot.dao.ConnectionPool;
 import com.example.reminderbot.miniapp.MiniAppServer;
-import com.example.reminderbot.model.BotState;
-import com.example.reminderbot.model.Catalog;
 import com.example.reminderbot.poller.UpdatePoller;
 import com.example.reminderbot.service.BotService;
-import com.example.reminderbot.storage.DatabaseCatalogStore;
 import com.example.reminderbot.storage.DatabaseStore;
-import com.example.reminderbot.storage.JsonStore;
-import com.example.reminderbot.storage.Store;
 import com.example.reminderbot.telegram.TelegramClient;
 
 import java.nio.file.Path;
@@ -28,27 +23,22 @@ public class Main {
         int webPort = Integer.parseInt(env("APP_PORT", env("PORT", "8080")));
 
         TelegramClient telegram = new TelegramClient(token);
-        Store<BotState> stateStore;
-        Store<Catalog> catalogStore;
         ConnectionPool connectionPool = null;
 
         String jdbcUrl = resolveJdbcUrl();
-        if (jdbcUrl != null) {
-            String dbUser = envAny("BOT_DB_USER", "PGUSER", "USERNAME");
-            String dbPassword = envAny("BOT_DB_PASSWORD", "PGPASSWORD", "PASSWORD");
-            String dbSchema = env("BOT_DB_SCHEMA", "public");
-            connectionPool = new ConnectionPool(jdbcUrl, dbUser, dbPassword, dbSchema);
-            DatabaseStore databaseStore = new DatabaseStore(connectionPool.getDataSource());
-            stateStore = databaseStore;
-            catalogStore = new DatabaseCatalogStore(databaseStore);
-        } else {
-            stateStore = new JsonStore<>(Path.of(stateFile), BotState.class, BotState.empty());
-            catalogStore = new JsonStore<>(Path.of(catalogFile), Catalog.class, Catalog.empty());
+        if (jdbcUrl == null) {
+            throw new IllegalStateException("Stateless Database Architecture requires a PostgreSQL database. Please provide BOT_DB_URL.");
         }
+        
+        String dbUser = envAny("BOT_DB_USER", "PGUSER", "USERNAME");
+        String dbPassword = envAny("BOT_DB_PASSWORD", "PGPASSWORD", "PASSWORD");
+        String dbSchema = env("BOT_DB_SCHEMA", "public");
+        connectionPool = new ConnectionPool(jdbcUrl, dbUser, dbPassword, dbSchema);
+        DatabaseStore databaseStore = new DatabaseStore(connectionPool.getDataSource());
 
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
 
-        BotService botService = new BotService(telegram, stateStore, catalogStore, ZoneId.of(zone), appBaseUrl);
+        BotService botService = new BotService(telegram, databaseStore, ZoneId.of(zone), appBaseUrl);
         MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService);
         miniAppServer.start();
 
@@ -73,7 +63,7 @@ public class Main {
             System.out.println("Shutdown complete.");
         }));
 
-        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + (jdbcUrl != null ? ", storage=database" : ", storage=json"));
+        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + ", storage=database");
     }
 
     private static String resolveJdbcUrl() {

@@ -1,0 +1,56 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-001-create-days-tables
+      author: ai
+      changes:
+        - createTable:
+            tableName: subscription_days_of_week
+            columns:
+              - column:
+                  name: subscription_id
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_sub_dow_sub_id
+                    references: subscriptions(id)
+                    deleteCascade: true
+              - column:
+                  name: day_of_week
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: subscription_days_of_month
+            columns:
+              - column:
+                  name: subscription_id
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_sub_dom_sub_id
+                    references: subscriptions(id)
+                    deleteCascade: true
+              - column:
+                  name: day_of_month
+                  type: INT
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: 003-002-migrate-days-data
+      author: ai
+      changes:
+        - sql:
+            sql: >
+              INSERT INTO subscription_days_of_week (subscription_id, day_of_week)
+              SELECT id, unnest(string_to_array(days_of_week, ','))
+              FROM subscriptions
+              WHERE days_of_week IS NOT NULL AND days_of_week != '';
+              
+              INSERT INTO subscription_days_of_month (subscription_id, day_of_month)
+              SELECT id, CAST(unnest(string_to_array(days_of_month, ',')) AS INT)
+              FROM subscriptions
+              WHERE days_of_month IS NOT NULL AND days_of_month != '';
+              -- Note: We are keeping the original 'days_of_week' and 'days_of_month'
+              -- text columns in the 'subscriptions' table for backward compatibility 
+              -- so old versions of the application continue to work. We are NOT dropping them here.
