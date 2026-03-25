@@ -9,8 +9,11 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DatabaseStore {
+    private static final Logger log = LoggerFactory.getLogger(DatabaseStore.class);
     private final DataSource dataSource;
     private final UserDao userDao;
     private final TaskDao taskDao;
@@ -54,7 +57,7 @@ public class DatabaseStore {
             conn.setAutoCommit(true);
             completionDao.upsert(conn, completion);
         } catch (SQLException e) {
-            System.err.println("Failed to save completion record: " + e.getMessage());
+            log.error("Failed to save completion record: {}", e.getMessage(), e);
         }
     }
 }

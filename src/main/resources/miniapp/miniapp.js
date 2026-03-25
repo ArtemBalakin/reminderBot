@@ -14,13 +14,19 @@
   let currentPage = 'tasks';
   let pageStack = [];
 
+  let startPage = 'tasks';
+  let startParams = null;
+
   // try to get chatId from Telegram or from URL for debug
+  const params = new URLSearchParams(location.search);
   if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
     chatId = tg.initDataUnsafe.user.id;
   } else {
-    const params = new URLSearchParams(location.search);
     if (params.get('chatId')) chatId = parseInt(params.get('chatId'), 10) || 0;
   }
+  if (params.get('page')) startPage = params.get('page');
+  if (params.get('ref')) startParams = { ref: params.get('ref') };
+  if (params.get('taskId')) startParams = { taskId: params.get('taskId') };
 
   /* ── API helper ─────────────────────────────────────────────── */
   async function api(path, body) {
@@ -743,6 +749,6 @@
   }
 
   /* ── Initial render ─────────────────────────────────────────── */
-  navigate('tasks');
+  navigate(startPage, startParams);
 
 })();

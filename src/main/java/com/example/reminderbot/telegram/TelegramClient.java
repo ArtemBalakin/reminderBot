@@ -17,8 +17,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TelegramClient {
+    private static final Logger log = LoggerFactory.getLogger(TelegramClient.class);
+    
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
     private final String token;
@@ -67,12 +71,12 @@ public class TelegramClient {
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Message.class);
             ApiResponse<Message> response = post("sendMessage", body, type);
             if (!response.ok() || response.result() == null) {
-                System.err.println("sendMessage failed: " + response.description());
+                log.error("sendMessage failed: {}", response.description());
                 return null;
             }
             return response.result().messageId();
         } catch (Exception e) {
-            System.err.println("sendMessage exception: " + e.getMessage());
+            log.error("sendMessage exception: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -107,7 +111,7 @@ public class TelegramClient {
             ApiResponse<Message> parsed = mapper.readValue(response.body(), type);
             return parsed.ok() && parsed.result() != null ? parsed.result().messageId() : null;
         } catch (Exception e) {
-            System.err.println("sendDocument exception: " + e.getMessage());
+            log.error("sendDocument exception: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -131,7 +135,7 @@ public class TelegramClient {
                     "message_id", messageId,
                     "reply_markup", replyMarkup == null ? Map.of("inline_keyboard", List.of()) : replyMarkup), type);
         } catch (Exception e) {
-            System.err.println("editMessageReplyMarkup exception: " + e.getMessage());
+            log.error("editMessageReplyMarkup exception: {}", e.getMessage(), e);
         }
     }
 
@@ -147,12 +151,12 @@ public class TelegramClient {
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Message.class);
             ApiResponse<Message> response = post("editMessageText", body, type);
             if (!response.ok() || response.result() == null) {
-                System.err.println("editMessageText failed: " + response.description());
+                log.error("editMessageText failed: {}", response.description());
                 return false;
             }
             return true;
         } catch (Exception e) {
-            System.err.println("editMessageText exception: " + e.getMessage());
+            log.error("editMessageText exception: {}", e.getMessage(), e);
             return false;
         }
     }
@@ -165,7 +169,7 @@ public class TelegramClient {
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
             post("answerCallbackQuery", body, type);
         } catch (Exception e) {
-            System.err.println("answerCallbackQuery exception: " + e.getMessage());
+            log.error("answerCallbackQuery exception: {}", e.getMessage(), e);
         }
     }
 
@@ -179,7 +183,7 @@ public class TelegramClient {
             JavaType type = mapper.getTypeFactory().constructParametricType(ApiResponse.class, Object.class);
             post("setChatMenuButton", Map.of("menu_button", menuButton), type);
         } catch (Exception e) {
-            System.err.println("setChatMenuButton exception: " + e.getMessage());
+            log.error("setChatMenuButton exception: {}", e.getMessage(), e);
         }
     }
 

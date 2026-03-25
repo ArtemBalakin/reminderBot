@@ -7,6 +7,9 @@ import com.example.reminderbot.service.BotService;
 import com.example.reminderbot.storage.DatabaseStore;
 import com.example.reminderbot.telegram.TelegramClient;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.concurrent.Executors;
@@ -14,6 +17,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class Main {
+    private static final Logger log = LoggerFactory.getLogger(Main.class);
+
     public static void main(String[] args) {
         String token = requireEnv("BOT_TOKEN");
         String zone = env("BOT_ZONE", "Asia/Almaty");
@@ -47,7 +52,7 @@ public class Main {
 
         ConnectionPool finalPool = connectionPool;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("Shutting down gracefully...");
+            log.info("Штатное завершение работы...");
             executor.shutdown();
             try {
                 if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
@@ -60,10 +65,10 @@ public class Main {
             if (finalPool != null) {
                 finalPool.close();
             }
-            System.out.println("Shutdown complete.");
+            log.info("Завершение работы выполнено.");
         }));
 
-        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + ", storage=database");
+        log.info("Бот запущен. Zone={}, miniapp port={}, baseUrl={}, storage=database", zone, webPort, appBaseUrl);
     }
 
     private static String resolveJdbcUrl() {

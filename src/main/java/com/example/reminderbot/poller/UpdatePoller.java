@@ -2,10 +2,14 @@ package com.example.reminderbot.poller;
 
 import com.example.reminderbot.service.BotService;
 import com.example.reminderbot.telegram.TelegramClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
 public class UpdatePoller implements Runnable {
+    private static final Logger log = LoggerFactory.getLogger(UpdatePoller.class);
+    
     private final TelegramClient telegram;
     private final BotService botService;
 
@@ -26,7 +30,7 @@ public class UpdatePoller implements Runnable {
                     botService.setLastUpdateId(update.updateId());
                 }
             } catch (Exception e) {
-                System.err.println("Polling error: " + e.getMessage());
+                log.error("Ошибка поллинга: {}", e.getMessage(), e);
                 try {
                     Thread.sleep(3000);
                 } catch (InterruptedException ex) {

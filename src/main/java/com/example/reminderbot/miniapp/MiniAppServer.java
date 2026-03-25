@@ -3,6 +3,8 @@ package com.example.reminderbot.miniapp;
 import com.example.reminderbot.service.BotService;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,6 +18,7 @@ import java.util.concurrent.Executor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class MiniAppServer {
+    private static final Logger log = LoggerFactory.getLogger(MiniAppServer.class);
     private final HttpServer server;
     private final Map<String, byte[]> staticCache = new HashMap<>();
 
@@ -23,18 +26,22 @@ public class MiniAppServer {
         try {
             this.server = HttpServer.create(new InetSocketAddress(port), 0);
         } catch (IOException e) {
+            log.error("Не удалось запустить сервер мини-приложения", e);
             throw new IllegalStateException("Failed to start mini app server", e);
         }
         for (String name : List.of("miniapp.html", "miniapp.css", "miniapp.js")) {
             byte[] data = loadResource("miniapp/" + name);
-            if (data != null) staticCache.put(name, data);
+            if (data != null) {
+                staticCache.put(name, data);
+            } else {
+                log.warn("Не удалось загрузить статический ресурс: miniapp/{}", name);
+            }
         }
         this.server.setExecutor(executor);
         
         HtmlHandler htmlHandler = new HtmlHandler(staticCache);
         
         this.server.createContext("/health", this::handleHealth);
-        this.server.createContext("/miniapp", htmlHandler);
         this.server.createContext("/app", exchange -> htmlHandler.handleApp(exchange));
         this.server.createContext("/static/", new StaticFileHandler(staticCache));
         this.server.createContext("/api/", new ApiHandler(botService, new ObjectMapper()));
@@ -42,10 +49,12 @@ public class MiniAppServer {
 
     public void start() {
         server.start();
+        log.info("Сервер мини-приложения успешно запущен");
     }
 
     public void stop(int delaySeconds) {
         server.stop(delaySeconds);
+        log.info("Сервер мини-приложения остановлен");
     }
 
     private void handleHealth(HttpExchange exchange) throws IOException {
