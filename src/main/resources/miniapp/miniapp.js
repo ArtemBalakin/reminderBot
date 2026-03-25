@@ -446,7 +446,7 @@
   let calSelected = null;
 
   async function renderCalendar() {
-    calData = await api('/api/calendar?year=' + calYear + '&month=' + calMonth);
+    calData = await api('/api/calendar/eager?year=' + calYear + '&month=' + calMonth);
     drawCalendar();
   }
 
