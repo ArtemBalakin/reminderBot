@@ -29,6 +29,7 @@ public class Main {
         if (jdbcUrl == null) {
             throw new IllegalStateException("Stateless Database Architecture requires a PostgreSQL database. Please provide BOT_DB_URL.");
         }
+        System.out.println("[Старт] Найдена конфигурация PostgreSQL: " + jdbcUrl);
         
         String dbUser = envAny("BOT_DB_USER", "PGUSER", "USERNAME");
         String dbPassword = envAny("BOT_DB_PASSWORD", "PGPASSWORD", "PASSWORD");
@@ -63,7 +64,8 @@ public class Main {
             System.out.println("Shutdown complete.");
         }));
 
-        System.out.println("Bot started. Zone=" + zone + ", miniapp port=" + webPort + ", baseUrl=" + appBaseUrl + ", storage=database");
+        System.out.println("[Старт] Бот запущен. Таймзона=" + zone + ", miniapp-порт=" + webPort + ", baseUrl=" + appBaseUrl + ", storage=database");
+        System.out.println("[Старт] Если Mini App не открывается, проверь APP_BASE_URL (должен быть публичный HTTPS) и доступность маршрута /app.");
     }
 
     private static String resolveJdbcUrl() {

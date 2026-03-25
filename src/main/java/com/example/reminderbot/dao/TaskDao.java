@@ -70,22 +70,41 @@ public class TaskDao {
                 note = EXCLUDED.note,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, task.id());
-            ps.setString(2, task.title());
-            ps.setString(3, task.kind().name());
-            ps.setString(4, task.schedule() != null ? task.schedule().unit().name() : null);
-            ps.setObject(5, task.schedule() != null ? task.schedule().interval() : null);
-            ps.setInt(6, task.recommendedSlots());
-            ps.setString(7, task.note());
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, task.id());
+                ps.setString(2, task.title());
+                ps.setString(3, task.kind().name());
+                ps.setString(4, task.schedule() != null ? task.schedule().unit().name() : null);
+                ps.setObject(5, task.schedule() != null ? task.schedule().interval() : null);
+                ps.setInt(6, task.recommendedSlots());
+                ps.setString(7, task.note());
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void delete(Connection conn, String taskId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("UPDATE tasks SET active = false, updated_at = CURRENT_TIMESTAMP WHERE id = ?")) {
-            ps.setString(1, taskId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE tasks SET active = false, updated_at = CURRENT_TIMESTAMP WHERE id = ?")) {
+                ps.setString(1, taskId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }

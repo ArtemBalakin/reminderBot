@@ -27,7 +27,12 @@ public class MiniAppServer {
         }
         for (String name : List.of("miniapp.html", "miniapp.css", "miniapp.js")) {
             byte[] data = loadResource("miniapp/" + name);
-            if (data != null) staticCache.put(name, data);
+            if (data != null) {
+                staticCache.put(name, data);
+                System.out.println("[MiniApp] Загружен ресурс: " + name + " (" + data.length + " байт)");
+            } else {
+                System.err.println("[MiniApp] Не удалось загрузить ресурс: " + name);
+            }
         }
         this.server.setExecutor(executor);
         
@@ -38,13 +43,17 @@ public class MiniAppServer {
         this.server.createContext("/app", exchange -> htmlHandler.handleApp(exchange));
         this.server.createContext("/static/", new StaticFileHandler(staticCache));
         this.server.createContext("/api/", new ApiHandler(botService, new ObjectMapper()));
+        System.out.println("[MiniApp] HTTP-контексты инициализированы: /health, /miniapp, /app, /static/, /api/");
     }
 
     public void start() {
+        System.out.println("[MiniApp] Запуск HTTP-сервера...");
         server.start();
+        System.out.println("[MiniApp] HTTP-сервер запущен.");
     }
 
     public void stop(int delaySeconds) {
+        System.out.println("[MiniApp] Остановка HTTP-сервера, delay=" + delaySeconds + "с");
         server.stop(delaySeconds);
     }
 

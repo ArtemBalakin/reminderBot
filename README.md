@@ -88,21 +88,24 @@ Java 21 + Maven Telegram-бот для бытовых дел и напомина
 - `BOT_ZONE` — таймзона по умолчанию, например `Asia/Almaty`
 - `APP_PORT` или `PORT` — порт встроенного HTTP-сервера для Mini App, по умолчанию `8080`
 
-### Вариант 1: PostgreSQL
+### PostgreSQL (обязательно)
 
-Если задан `BOT_DB_URL`, бот хранит и каталог дел, и состояние в PostgreSQL.
+Начиная с текущей версии, бот работает только с PostgreSQL (stateless database architecture).
+Если `BOT_DB_URL` не задан, приложение завершится с ошибкой при старте.
 
 - `BOT_DB_URL` — JDBC URL, например `jdbc:postgresql://db:5432/reminderbotdb`
 - `BOT_DB_USER` — пользователь БД
 - `BOT_DB_PASSWORD` — пароль БД
 - `BOT_DB_SCHEMA` — схема, по умолчанию `public`
 
-### Вариант 2: JSON-файлы
+Дополнительные alias-переменные, которые тоже поддерживаются:
 
-Если `BOT_DB_URL` не задан, бот работает как раньше через JSON-файлы.
+- URL: `JDBC_POSTGRES_URI`, `JDBC_DATABASE_URL`
+- User: `PGUSER`, `USERNAME`
+- Password: `PGPASSWORD`, `PASSWORD`
+- Также можно собрать URL из `BOT_DB_HOST` + `BOT_DB_PORT` + `BOT_DB_NAME`
 
-- `BOT_STATE_FILE` — путь до state.json, по умолчанию `data/state.json`
-- `BOT_CATALOG_FILE` — путь до catalog.json, по умолчанию `data/catalog.json`
+> Примечание: `BOT_STATE_FILE` и `BOT_CATALOG_FILE` больше не используются в рабочем режиме.
 
 ## Запуск локально
 
@@ -132,9 +135,17 @@ java -jar target/reminderbot-7.0.0.jar
 - выдать HTTPS
 - задать `BOT_DB_URL`, `BOT_DB_USER`, `BOT_DB_PASSWORD`
 
+### Если Mini App не открывается
+
+Проверь по шагам:
+
+1. `APP_BASE_URL` должен быть публичным **HTTPS**-адресом (не `http://` и не localhost).
+2. По адресу `${APP_BASE_URL}/app` должна открываться страница Mini App.
+3. В логах должны быть строки о старте сервера и маршрутах `/app`, `/api/`.
+4. Если не работает именно календарь, используй актуальный endpoint `/api/calendar` (поддерживается напрямую).
+
 ## Структура проекта
 
 - `src/main/java/...` — исходники
-- `data/catalog.json` — текущий каталог
-- `data/state.json` — состояние бота
-- `sample/catalog.json` — пример каталога
+- `src/main/resources/db/changelog/...` — миграции схемы PostgreSQL
+- `src/main/resources/miniapp/...` — фронтенд Telegram Mini App

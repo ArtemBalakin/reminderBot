@@ -43,21 +43,40 @@ public class CompletionDao {
             INSERT INTO completion_records (prompt_id, subscription_id, task_id, chat_id, scheduled_for, completed_at, outcome)
             VALUES (?, ?, ?, ?, ?, ?, 'DONE')
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, record.promptId());
-            ps.setString(2, record.subscriptionId());
-            ps.setString(3, record.taskId());
-            ps.setLong(4, record.chatId());
-            ps.setTimestamp(5, Timestamp.from(record.scheduledFor()));
-            ps.setTimestamp(6, Timestamp.from(record.completedAt()));
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, record.promptId());
+                ps.setString(2, record.subscriptionId());
+                ps.setString(3, record.taskId());
+                ps.setLong(4, record.chatId());
+                ps.setTimestamp(5, Timestamp.from(record.scheduledFor()));
+                ps.setTimestamp(6, Timestamp.from(record.completedAt()));
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void cleanupOld(Connection conn, Instant cutoff) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM completion_records WHERE completed_at < ?")) {
-            ps.setTimestamp(1, Timestamp.from(cutoff));
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM completion_records WHERE completed_at < ?")) {
+                ps.setTimestamp(1, Timestamp.from(cutoff));
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }
