@@ -127,40 +127,71 @@ public class PromptDao {
                 current_stage_alert_sent = EXCLUDED.current_stage_alert_sent,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, prompt.id());
-            ps.setString(2, prompt.subscriptionId());
-            ps.setString(3, prompt.taskId());
-            ps.setLong(4, prompt.chatId());
-            ps.setTimestamp(5, Timestamp.from(prompt.scheduledFor()));
-            ps.setTimestamp(6, prompt.nextPingAt() != null ? Timestamp.from(prompt.nextPingAt()) : null);
-            ps.setString(7, prompt.state());
-            ps.setObject(8, prompt.messageId());
-            ps.setInt(9, prompt.alertBroadcastCount());
-            ps.setBoolean(10, prompt.endOfDayAlertSent());
-            ps.setTimestamp(11, prompt.stageStartedAt() != null ? Timestamp.from(prompt.stageStartedAt()) : null);
-            ps.setBoolean(12, prompt.currentStageAlertSent());
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, prompt.id());
+                ps.setString(2, prompt.subscriptionId());
+                ps.setString(3, prompt.taskId());
+                ps.setLong(4, prompt.chatId());
+                ps.setTimestamp(5, Timestamp.from(prompt.scheduledFor()));
+                ps.setTimestamp(6, prompt.nextPingAt() != null ? Timestamp.from(prompt.nextPingAt()) : null);
+                ps.setString(7, prompt.state());
+                ps.setObject(8, prompt.messageId());
+                ps.setInt(9, prompt.alertBroadcastCount());
+                ps.setBoolean(10, prompt.endOfDayAlertSent());
+                ps.setTimestamp(11, prompt.stageStartedAt() != null ? Timestamp.from(prompt.stageStartedAt()) : null);
+                ps.setBoolean(12, prompt.currentStageAlertSent());
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void delete(Connection conn, String promptId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE id = ?")) {
-            ps.setString(1, promptId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE id = ?")) {
+                ps.setString(1, promptId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void deleteBySubscriptionId(Connection conn, String subscriptionId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE subscription_id = ?")) {
-            ps.setString(1, subscriptionId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE subscription_id = ?")) {
+                ps.setString(1, subscriptionId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void deleteAll(Connection conn) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts")) {
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts")) {
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }

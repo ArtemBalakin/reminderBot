@@ -81,21 +81,38 @@ public class SessionDao {
                 helper_message_id = EXCLUDED.helper_message_id,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, chatId);
-            ps.setString(2, session.type().name());
-            ps.setString(3, mapper.writeValueAsString(session.data()));
-            ps.setObject(4, session.helperMessageId());
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setLong(1, chatId);
+                ps.setString(2, session.type().name());
+                ps.setString(3, mapper.writeValueAsString(session.data()));
+                ps.setObject(4, session.helperMessageId());
+                ps.executeUpdate();
+            }
+            conn.commit();
         } catch (Exception e) {
+            rollbackQuietly(conn);
             throw new SQLException("Failed to upsert session", e);
         }
     }
 
     public void delete(Connection conn, long chatId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM sessions WHERE chat_id = ?")) {
-            ps.setLong(1, chatId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM sessions WHERE chat_id = ?")) {
+                ps.setLong(1, chatId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }
