@@ -160,72 +160,91 @@ public class SubscriptionDao {
                 one_time_done = EXCLUDED.one_time_done,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, sub.id());
-            ps.setString(2, sub.taskId());
-            ps.setLong(3, sub.chatId());
-            ps.setString(4, sub.dayOfWeek());
-            ps.setObject(5, sub.dayOfMonth());
-            ps.setString(6, sub.zoneId());
-            ps.setTimestamp(7, sub.nextRunAt() != null ? Timestamp.from(sub.nextRunAt()) : null);
-            ps.setBoolean(8, sub.active());
-            ps.setBoolean(9, sub.oneTimeDone());
-            ps.executeUpdate();
-        }
-
-        try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_daily_times WHERE subscription_id = ?")) {
-            del.setString(1, sub.id());
-            del.executeUpdate();
-        }
-        try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_week WHERE subscription_id = ?")) {
-            del.setString(1, sub.id());
-            del.executeUpdate();
-        }
-        try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_month WHERE subscription_id = ?")) {
-            del.setString(1, sub.id());
-            del.executeUpdate();
-        }
-        if (sub.dailyTimes() != null && !sub.dailyTimes().isEmpty()) {
-            String insertTimes = "INSERT INTO subscription_daily_times (subscription_id, slot_time) VALUES (?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(insertTimes)) {
-                for (String time : sub.dailyTimes()) {
-                    ps.setString(1, sub.id());
-                    ps.setTime(2, Time.valueOf(LocalTime.parse(time)));
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, sub.id());
+                ps.setString(2, sub.taskId());
+                ps.setLong(3, sub.chatId());
+                ps.setString(4, sub.dayOfWeek());
+                ps.setObject(5, sub.dayOfMonth());
+                ps.setString(6, sub.zoneId());
+                ps.setTimestamp(7, sub.nextRunAt() != null ? Timestamp.from(sub.nextRunAt()) : null);
+                ps.setBoolean(8, sub.active());
+                ps.setBoolean(9, sub.oneTimeDone());
+                ps.executeUpdate();
             }
-        }
 
-        if (sub.daysOfWeek() != null && !sub.daysOfWeek().isEmpty()) {
-            String insertDow = "INSERT INTO subscription_days_of_week (subscription_id, day_of_week) VALUES (?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(insertDow)) {
-                for (String day : sub.daysOfWeek()) {
-                    ps.setString(1, sub.id());
-                    ps.setString(2, day);
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+            try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_daily_times WHERE subscription_id = ?")) {
+                del.setString(1, sub.id());
+                del.executeUpdate();
             }
-        }
+            try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_week WHERE subscription_id = ?")) {
+                del.setString(1, sub.id());
+                del.executeUpdate();
+            }
+            try (PreparedStatement del = conn.prepareStatement("DELETE FROM subscription_days_of_month WHERE subscription_id = ?")) {
+                del.setString(1, sub.id());
+                del.executeUpdate();
+            }
+            if (sub.dailyTimes() != null && !sub.dailyTimes().isEmpty()) {
+                String insertTimes = "INSERT INTO subscription_daily_times (subscription_id, slot_time) VALUES (?, ?)";
+                try (PreparedStatement ps = conn.prepareStatement(insertTimes)) {
+                    for (String time : sub.dailyTimes()) {
+                        ps.setString(1, sub.id());
+                        ps.setTime(2, Time.valueOf(LocalTime.parse(time)));
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
 
-        if (sub.daysOfMonth() != null && !sub.daysOfMonth().isEmpty()) {
-            String insertDom = "INSERT INTO subscription_days_of_month (subscription_id, day_of_month) VALUES (?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(insertDom)) {
-                for (Integer day : sub.daysOfMonth()) {
-                    ps.setString(1, sub.id());
-                    ps.setInt(2, day);
-                    ps.addBatch();
+            if (sub.daysOfWeek() != null && !sub.daysOfWeek().isEmpty()) {
+                String insertDow = "INSERT INTO subscription_days_of_week (subscription_id, day_of_week) VALUES (?, ?)";
+                try (PreparedStatement ps = conn.prepareStatement(insertDow)) {
+                    for (String day : sub.daysOfWeek()) {
+                        ps.setString(1, sub.id());
+                        ps.setString(2, day);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
                 }
-                ps.executeBatch();
             }
+
+            if (sub.daysOfMonth() != null && !sub.daysOfMonth().isEmpty()) {
+                String insertDom = "INSERT INTO subscription_days_of_month (subscription_id, day_of_month) VALUES (?, ?)";
+                try (PreparedStatement ps = conn.prepareStatement(insertDom)) {
+                    for (Integer day : sub.daysOfMonth()) {
+                        ps.setString(1, sub.id());
+                        ps.setInt(2, day);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void delete(Connection conn, String subscriptionId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM subscriptions WHERE id = ?")) {
-            ps.setString(1, subscriptionId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM subscriptions WHERE id = ?")) {
+                ps.setString(1, subscriptionId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }

@@ -23,9 +23,22 @@ public class AppMetaDao {
                 meta_value = EXCLUDED.meta_value,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, String.valueOf(updateId));
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, String.valueOf(updateId));
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }

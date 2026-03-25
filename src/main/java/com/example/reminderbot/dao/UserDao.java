@@ -62,21 +62,40 @@ public class UserDao {
                 reping_minutes = EXCLUDED.reping_minutes,
                 updated_at = CURRENT_TIMESTAMP
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, user.chatId());
-            ps.setString(2, user.username());
-            ps.setString(3, user.firstName());
-            ps.setString(4, user.zoneId());
-            ps.setBoolean(5, user.alertsEnabled());
-            ps.setInt(6, user.repingMinutes() == null ? 5 : user.repingMinutes());
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setLong(1, user.chatId());
+                ps.setString(2, user.username());
+                ps.setString(3, user.firstName());
+                ps.setString(4, user.zoneId());
+                ps.setBoolean(5, user.alertsEnabled());
+                ps.setInt(6, user.repingMinutes() == null ? 5 : user.repingMinutes());
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
         }
     }
 
     public void delete(Connection conn, long chatId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM users WHERE chat_id = ?")) {
-            ps.setLong(1, chatId);
-            ps.executeUpdate();
+        try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM users WHERE chat_id = ?")) {
+                ps.setLong(1, chatId);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
+    private void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
         }
     }
 }
