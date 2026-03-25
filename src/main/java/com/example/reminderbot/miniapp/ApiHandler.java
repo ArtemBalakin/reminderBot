@@ -39,6 +39,7 @@ public class ApiHandler implements HttpHandler {
         String path = exchange.getRequestURI().getPath();
         Map<String, String> q = query(exchange.getRequestURI());
         long chatId = parseChatId(q.get("chatId"));
+        System.out.println("[MiniApp API] " + exchange.getRequestMethod() + " " + path + " chatId=" + chatId);
 
         try {
             Object result = switch (path) {
@@ -49,6 +50,11 @@ public class ApiHandler implements HttpHandler {
                 case "/api/board" -> botService.apiGetBoard();
                 case "/api/stats" -> botService.apiGetStats();
                 case "/api/calendar/eager" -> {
+                    int y = intParam(q, "year", java.time.LocalDate.now().getYear());
+                    int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
+                    yield botService.apiGetCalendar(y, m, q.get("zoneId"));
+                }
+                case "/api/calendar" -> {
                     int y = intParam(q, "year", java.time.LocalDate.now().getYear());
                     int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
                     yield botService.apiGetCalendar(y, m, q.get("zoneId"));
@@ -132,6 +138,7 @@ public class ApiHandler implements HttpHandler {
             };
             respondJson(exchange, 200, result);
         } catch (Exception e) {
+            System.err.println("[MiniApp API] Ошибка обработки запроса " + path + ": " + e.getMessage());
             respondJson(exchange, 500, Map.of("error", e.getMessage() == null ? "Internal error" : e.getMessage()));
         }
     }

@@ -19,8 +19,10 @@ public class HtmlHandler implements HttpHandler {
     }
 
     public void handleApp(HttpExchange exchange) throws IOException {
+        System.out.println("[MiniApp] Открытие SPA: " + exchange.getRequestURI());
         byte[] html = staticCache.get("miniapp.html");
         if (html == null) {
+            System.err.println("[MiniApp] miniapp.html не найден в кеше ресурсов");
             respond(exchange, 404, "text/plain; charset=utf-8", "not found".getBytes(StandardCharsets.UTF_8));
             return;
         }
@@ -29,6 +31,7 @@ public class HtmlHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        System.out.println("[MiniApp] Открытие legacy-страницы /miniapp: " + exchange.getRequestURI());
         Map<String, String> q = query(exchange.getRequestURI());
         respond(exchange, 200, "text/html; charset=utf-8", scheduleHtml(q).getBytes(StandardCharsets.UTF_8));
     }
