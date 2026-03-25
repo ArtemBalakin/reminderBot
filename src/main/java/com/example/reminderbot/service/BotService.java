@@ -618,7 +618,21 @@ public class BotService {
                         STATE_START_WAITING, null, 0, false, now, false);
                 
                 db.prompts().upsert(conn, prompt);
-                db.subscriptions().upsert(conn, advanceSubscription(sub, task, sub.nextRunAt(), now));
+                try {
+                    Subscription advanced = advanceSubscription(sub, task, sub.nextRunAt(), now);
+                    db.subscriptions().upsert(conn, advanced);
+                    System.out.println("[processDueItems] Advanced sub " + sub.id() + " (" + task.title() + ") nextRunAt: " + sub.nextRunAt() + " -> " + advanced.nextRunAt());
+                } catch (Exception e) {
+                    System.err.println("[processDueItems] Failed to advance sub " + sub.id() + ": " + e.getMessage());
+                    e.printStackTrace();
+                    // Fallback: move nextRunAt to tomorrow to prevent infinite re-triggering
+                    Instant fallback = now.plus(Duration.ofDays(1));
+                    Subscription fallbackSub = new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(),
+                            sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), fallback, sub.active(), sub.oneTimeDone(),
+                            sub.daysOfWeek(), sub.daysOfMonth());
+                    db.subscriptions().upsert(conn, fallbackSub);
+                    System.err.println("[processDueItems] Fallback nextRunAt for sub " + sub.id() + ": " + fallback);
+                }
                 actions.add(new DueAction(prompt, task, PromptReason.FIRST));
             }
             
@@ -1485,8 +1499,6 @@ public class BotService {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
             }
-            Subscription sub = findSubscription(conn, prompt.subscriptionId());
-            TaskDefinition task = findTask(conn, prompt.taskId());
             db.prompts().delete(conn, promptId);
             
             CompletionRecord completion = new CompletionRecord(prompt.id(), prompt.subscriptionId(), prompt.taskId(),
@@ -1494,9 +1506,6 @@ public class BotService {
             
             db.completions().upsert(conn, completion);
             
-            if (sub != null && task != null) {
-                db.subscriptions().upsert(conn, advanceSubscription(sub, task, prompt.scheduledFor(), Instant.now()));
-            }
             telegram.answerCallbackQuery(callbackId, "Отмечено как сделано");
             if (messageId != null)
                 telegram.editMessageReplyMarkup(chatId, messageId, TelegramClient.inlineKeyboard(List.of()));
@@ -1593,7 +1602,7 @@ public class BotService {
             return sub;
         }
         ZoneId zone = ZoneId.of(sub.zoneId());
-        Instant base = previousScheduledFor.isAfter(now) ? previousScheduledFor.plusSeconds(1) : now;
+        Instant base = previousScheduledFor.plusSeconds(1);
         Instant next = switch (task.schedule().unit()) {
             case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, base);
             case WEEK -> computeNextWeekly(sub.dailyTimes(), sub.daysOfWeek(), task.schedule().interval(), zone, base);
@@ -2061,6 +2070,7 @@ public class BotService {
         try (java.sql.Connection conn = db.getConnection()) {
             List<Subscription> subs = db.subscriptions().loadAll(conn);
             int count = 0;
+            int errors = 0;
             Instant now = Instant.now();
             for (Subscription sub : subs) {
                 if (sub.nextRunAt() == null || !sub.nextRunAt().isBefore(now)) continue;
@@ -2068,16 +2078,33 @@ public class BotService {
                 if (task == null) continue;
                 if (task.kind() == TaskKind.MANUAL) continue;
                 
-                Subscription current = sub;
-                while (current.nextRunAt() != null && current.nextRunAt().isBefore(now)) {
-                    current = advanceSubscription(current, task, current.nextRunAt(), now);
-                    if (current.oneTimeDone()) break;
+                try {
+                    Subscription current = sub;
+                    while (current.nextRunAt() != null && current.nextRunAt().isBefore(now)) {
+                        current = advanceSubscription(current, task, current.nextRunAt(), now);
+                        if (current.oneTimeDone()) break;
+                    }
+                    db.subscriptions().upsert(conn, current);
+                    System.out.println("[fastforward] Advanced sub " + sub.id() + " (" + task.title() + ") nextRunAt: " + sub.nextRunAt() + " -> " + current.nextRunAt());
+                    count++;
+                } catch (Exception e) {
+                    System.err.println("[fastforward] Failed to advance sub " + sub.id() + " (" + task.title() + "): " + e.getMessage());
+                    e.printStackTrace();
+                    // Fallback: move nextRunAt to tomorrow to prevent infinite re-triggering
+                    Instant fallback = now.plus(Duration.ofDays(1));
+                    Subscription fallbackSub = new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(),
+                            sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), fallback, sub.active(), sub.oneTimeDone(),
+                            sub.daysOfWeek(), sub.daysOfMonth());
+                    db.subscriptions().upsert(conn, fallbackSub);
+                    System.err.println("[fastforward] Fallback nextRunAt for sub " + sub.id() + ": " + fallback);
+                    errors++;
                 }
-                db.subscriptions().upsert(conn, current);
-                count++;
             }
-            db.prompts().deleteAll(conn); // We need to clear all hanging prompts
-            telegram.sendMessage(chatId, "Все долги списаны! Обновлено " + count + " подписок.");
+            db.prompts().deleteAll(conn);
+            conn.commit();
+            String msg = "Все долги списаны! Обновлено " + count + " подписок.";
+            if (errors > 0) msg += " (" + errors + " с ошибками, сдвинуты на завтра)";
+            telegram.sendMessage(chatId, msg);
         } catch (java.sql.SQLException e) {
             telegram.sendMessage(chatId, "Ошибка БД: " + e.getMessage());
         }
