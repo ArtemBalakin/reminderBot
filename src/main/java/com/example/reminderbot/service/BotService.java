@@ -41,7 +41,7 @@ public class BotService {
         this.appBaseUrl = appBaseUrl.endsWith("/") ? appBaseUrl.substring(0, appBaseUrl.length() - 1) : appBaseUrl;
         
         // Always try to set the menu button to the MiniApp to make it static
-        this.telegram.setChatMenuButton("Планировщик", this.appBaseUrl + "/app");
+        this.telegram.setChatMenuButton("Открыть приложение", this.appBaseUrl + "/app");
     }
 
     public long getLastUpdateId() {
@@ -375,54 +375,103 @@ public class BotService {
 
     public Map<String, Object> apiGetTodayBoard(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
-            Instant now = Instant.now();
-            List<Map<String, Object>> sections = new ArrayList<>();
-            UserProfile profile = getProfile(conn, chatId);
-            ZoneId zone;
-            try {
-                zone = ZoneId.of(profile.zoneId());
-            } catch (DateTimeException e) {
-                zone = defaultZone;
-            }
-            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
-            List<Map<String, Object>> rows = new ArrayList<>();
-            for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
-                if (!sub.active()) continue;
-                TaskDefinition task = findTask(conn, sub.taskId());
-                if (task == null || task.kind() == TaskKind.MANUAL) continue;
-                ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
-                List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
-                boolean hasTodayFuture = sub.nextRunAt() != null
-                        && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
-                if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
-                String status;
-                if (prompt != null) {
-                    status = switch (prompt.state()) {
-                        case "SNOOZED" -> "отложено";
-                        case "GOING_DOING_DELAY" -> "пошёл делать";
-                        case "CHECK_WAITING" -> "ждёт подтверждения";
-                        default -> "ждёт ответа";
-                    };
-                } else if (!done.isEmpty()) {
-                    status = "сделано";
-                } else {
-                    status = "запланировано на " + DATE_TIME_FMT.format(
-                            ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+            String sql = """
+                WITH today_prompts AS (
+                    SELECT DISTINCT ON (p.subscription_id)
+                        p.subscription_id, p.state, p.next_ping_at
+                    FROM prompts p
+                    JOIN subscriptions s ON s.id = p.subscription_id
+                    JOIN users u ON u.chat_id = s.chat_id
+                    WHERE (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    ORDER BY p.subscription_id, p.scheduled_for DESC
+                ),
+                today_completions AS (
+                    SELECT cr.subscription_id, COUNT(*) as cnt
+                    FROM completion_records cr
+                    JOIN subscriptions s ON s.id = cr.subscription_id
+                    JOIN users u ON u.chat_id = s.chat_id
+                    WHERE (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    GROUP BY cr.subscription_id
+                )
+                SELECT
+                    u.chat_id, u.username, u.first_name, u.zone_id,
+                    t.title AS task_title,
+                    s.next_run_at,
+                    tp.state AS prompt_state,
+                    COALESCE(tc.cnt, 0) AS completion_count,
+                    CASE WHEN s.next_run_at IS NOT NULL
+                         AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                         THEN true ELSE false END AS has_today_future
+                FROM subscriptions s
+                JOIN tasks t ON t.id = s.task_id AND t.active = true
+                JOIN users u ON u.chat_id = s.chat_id
+                LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
+                LEFT JOIN today_completions tc ON tc.subscription_id = s.id
+                WHERE s.active = true AND t.kind != 'MANUAL'
+                  AND (tp.subscription_id IS NOT NULL
+                       OR tc.subscription_id IS NOT NULL
+                       OR (s.next_run_at IS NOT NULL
+                           AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date))
+                ORDER BY COALESCE(u.username, u.first_name, u.chat_id::text), t.title
+                """;
+            Map<Long, Map<String, Object>> sectionMap = new LinkedHashMap<>();
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql);
+                 java.sql.ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long uid = rs.getLong("chat_id");
+                    String username = rs.getString("username");
+                    String firstName = rs.getString("first_name");
+                    String zoneId = rs.getString("zone_id");
+                    String taskTitle = rs.getString("task_title");
+                    String promptState = rs.getString("prompt_state");
+                    int completionCount = rs.getInt("completion_count");
+                    boolean hasTodayFuture = rs.getBoolean("has_today_future");
+                    java.sql.Timestamp nextRunAt = rs.getTimestamp("next_run_at");
+
+                    ZoneId zone;
+                    try { zone = ZoneId.of(zoneId); } catch (Exception e) { zone = defaultZone; }
+
+                    String status;
+                    boolean done;
+                    if (promptState != null) {
+                        status = switch (promptState) {
+                            case "SNOOZED" -> "отложено";
+                            case "GOING_DOING_DELAY" -> "пошёл делать";
+                            case "CHECK_WAITING" -> "ждёт подтверждения";
+                            default -> "ждёт ответа";
+                        };
+                        done = false;
+                    } else if (completionCount > 0) {
+                        status = "сделано";
+                        done = true;
+                    } else {
+                        status = "запланировано на " + DATE_TIME_FMT.format(
+                                ZonedDateTime.ofInstant(nextRunAt.toInstant(), zone));
+                        done = false;
+                    }
+
+                    String displayName = (username != null && !username.isBlank())
+                            ? "@" + username : firstName + " (" + uid + ")";
+
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> section = sectionMap.computeIfAbsent(uid, k -> {
+                        Map<String, Object> s = new LinkedHashMap<>();
+                        s.put("user", displayName);
+                        s.put("tasks", new ArrayList<Map<String, Object>>());
+                        return s;
+                    });
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskTitle", taskTitle);
+                    row.put("status", status);
+                    row.put("done", done);
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> tasks = (List<Map<String, Object>>) section.get("tasks");
+                    tasks.add(row);
                 }
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("taskTitle", task.title());
-                row.put("status", status);
-                row.put("done", !done.isEmpty() && prompt == null);
-                rows.add(row);
             }
-            if (!rows.isEmpty()) {
-                Map<String, Object> section = new LinkedHashMap<>();
-                section.put("user", displayUser(conn, profile.chatId()));
-                section.put("tasks", rows);
-                sections.add(section);
-            }
-            return Map.of("sections", sections);
+            return Map.of("sections", new ArrayList<>(sectionMap.values()));
         } catch (java.sql.SQLException e) {
+            System.err.println("apiGetTodayBoard SQL error: " + e.getMessage());
             return Map.of("sections", List.of());
         }
     }
@@ -781,7 +830,7 @@ public class BotService {
             try (java.sql.Connection conn = db.getConnection()) {
                 db.sessions().delete(conn, chatId);
             } catch (java.sql.SQLException e) {}
-            telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.", persistentAppKeyboard());
+            telegram.sendMessage(chatId, "Ок, отменил текущий сценарий.");
             return;
         }
 
@@ -817,7 +866,7 @@ public class BotService {
         }
 
         if (text.equals("/start")) {
-            telegram.sendMessage(chatId, startText(), persistentAppKeyboard());
+            telegram.sendMessage(chatId, startText());
             telegram.sendMessage(chatId, "\u2699\uFE0F Быстрые действия:", startInlineKeyboard());
             return;
         }
@@ -926,7 +975,7 @@ public class BotService {
             return;
         }
 
-        telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.", persistentAppKeyboard());
+        telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.");
     }
 
     private void handleCallback(TelegramClient.CallbackQuery callback) {
@@ -1058,8 +1107,7 @@ public class BotService {
                 }
                 db.sessions().delete(conn, profile.chatId());
             }
-            telegram.sendMessage(profile.chatId(), "Файл импортирован. Дел: " + imported.tasks().size(),
-                    persistentAppKeyboard());
+            telegram.sendMessage(profile.chatId(), "Файл импортирован. Дел: " + imported.tasks().size());
         } catch (Exception e) {
             telegram.sendMessage(profile.chatId(), "Не смог импортировать файл: " + e.getMessage());
         }
@@ -1071,8 +1119,7 @@ public class BotService {
             UserSession session = getSession(conn, chatId);
             if (session == null || session.type() != SessionType.WAITING_WEBAPP_SUBSCRIPTION) {
                 telegram.sendMessage(chatId,
-                        "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.",
-                        persistentAppKeyboard());
+                        "Планировщик открыт вне сценария настройки. Открой настройку заново через /tasks.");
                 return;
             }
             JsonNode root = db.mapper().readTree(message.webAppData().data());
@@ -1106,10 +1153,9 @@ public class BotService {
             if (message.messageId() != null) {
                 telegram.deleteMessage(chatId, message.messageId());
             }
-            telegram.sendMessage(chatId, subscriptionSummary(updated, task), persistentAppKeyboard());
+            telegram.sendMessage(chatId, subscriptionSummary(updated, task));
         } catch (Exception e) {
-            telegram.sendMessage(chatId, "Не смог сохранить настройку из Mini App: " + e.getMessage(),
-                    persistentAppKeyboard());
+            telegram.sendMessage(chatId, "Не смог сохранить настройку из Mini App: " + e.getMessage());
         }
     }
 
@@ -1226,8 +1272,7 @@ public class BotService {
         db.sessions().delete(conn, chatId);
         telegram.sendMessage(chatId,
                 "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(task) +
-                        "\nДальше можешь открыть /tasks и настроить себе напоминание.",
-                persistentAppKeyboard());
+                        "\nДальше можешь открыть /tasks и настроить себе напоминание.");
     }
 
     private void startMiniAppSubscription(long chatId, String ref) {
@@ -1933,10 +1978,7 @@ public class BotService {
                         TelegramClient.button("Europe/Berlin", "TZ:Europe/Berlin"))));
     }
 
-    private Map<String, Object> persistentAppKeyboard() {
-        return TelegramClient.persistentKeyboard(List.of(
-                List.of(TelegramClient.webAppKeyboardButton("\uD83D\uDCF1 Открыть приложение", appBaseUrl + "/app"))));
-    }
+
 
     private Map<String, Object> startInlineKeyboard() {
         return TelegramClient.inlineKeyboard(List.of(
@@ -2178,7 +2220,7 @@ public class BotService {
         if (callbackId != null) {
             telegram.answerCallbackQuery(callbackId, "Изменено");
         }
-        telegram.sendMessage(chatId, message, persistentAppKeyboard());
+        telegram.sendMessage(chatId, message);
     }
 
     private String subscriberStatsText() {
@@ -2409,8 +2451,7 @@ public class BotService {
             if (updated != null) {
                 db.tasks().upsert(conn, updated);
                 db.sessions().delete(conn, chatId);
-                telegram.sendMessage(chatId, "✅ Дело обновлено:\n\n" + updated.title() + "\n" + frequencyText(updated),
-                        persistentAppKeyboard());
+                telegram.sendMessage(chatId, "✅ Дело обновлено:\n\n" + updated.title() + "\n" + frequencyText(updated));
             }
         } catch (java.sql.SQLException e) {
             telegram.sendMessage(chatId, "Ошибка БД");
@@ -2526,69 +2567,98 @@ public class BotService {
 
     private String todayBoardText() {
         try (java.sql.Connection conn = db.getConnection()) {
-            Instant now = Instant.now();
-            List<String> sections = new ArrayList<>();
-            List<UserProfile> users = new ArrayList<>(db.users().loadAll(conn).values()).stream()
-                    .sorted(Comparator.comparing(this::displayNameForSort)).toList();
-            for (UserProfile profile : users) {
-                ZoneId zone = ZoneId.of(profile.zoneId());
-                LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
-                List<String> rows = new ArrayList<>();
-                for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
-                    if (!sub.active())
-                        continue;
-                    TaskDefinition task = findTask(conn, sub.taskId());
-                    if (task == null || task.kind() == TaskKind.MANUAL)
-                        continue;
-                    ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
-                    List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
-                    boolean hasTodayFuture = sub.nextRunAt() != null
-                            && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
-                    if (prompt == null && done.isEmpty() && !hasTodayFuture)
-                        continue;
+            String sql = """
+                WITH today_prompts AS (
+                    SELECT DISTINCT ON (p.subscription_id)
+                        p.subscription_id, p.state, p.next_ping_at
+                    FROM prompts p
+                    JOIN subscriptions s ON s.id = p.subscription_id
+                    JOIN users u ON u.chat_id = s.chat_id
+                    WHERE (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    ORDER BY p.subscription_id, p.scheduled_for DESC
+                ),
+                today_completions AS (
+                    SELECT cr.subscription_id, MAX(cr.completed_at) AS last_completed_at
+                    FROM completion_records cr
+                    JOIN subscriptions s ON s.id = cr.subscription_id
+                    JOIN users u ON u.chat_id = s.chat_id
+                    WHERE (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    GROUP BY cr.subscription_id
+                )
+                SELECT
+                    u.chat_id, u.username, u.first_name, u.zone_id,
+                    t.title AS task_title,
+                    s.next_run_at,
+                    tp.state AS prompt_state,
+                    tp.next_ping_at AS prompt_next_ping,
+                    tc.last_completed_at,
+                    CASE WHEN s.next_run_at IS NOT NULL
+                         AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                         THEN true ELSE false END AS has_today_future
+                FROM subscriptions s
+                JOIN tasks t ON t.id = s.task_id AND t.active = true
+                JOIN users u ON u.chat_id = s.chat_id
+                LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
+                LEFT JOIN today_completions tc ON tc.subscription_id = s.id
+                WHERE s.active = true AND t.kind != 'MANUAL'
+                  AND (tp.subscription_id IS NOT NULL
+                       OR tc.subscription_id IS NOT NULL
+                       OR (s.next_run_at IS NOT NULL
+                           AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date))
+                ORDER BY COALESCE(u.username, u.first_name, u.chat_id::text), t.title
+                """;
+            Map<Long, List<String>> userSections = new LinkedHashMap<>();
+            Map<Long, String> userNames = new LinkedHashMap<>();
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql);
+                 java.sql.ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long uid = rs.getLong("chat_id");
+                    String username = rs.getString("username");
+                    String firstName = rs.getString("first_name");
+                    String zoneId = rs.getString("zone_id");
+                    String taskTitle = rs.getString("task_title");
+                    String promptState = rs.getString("prompt_state");
+                    java.sql.Timestamp promptNextPing = rs.getTimestamp("prompt_next_ping");
+                    java.sql.Timestamp lastCompleted = rs.getTimestamp("last_completed_at");
+                    java.sql.Timestamp nextRunAt = rs.getTimestamp("next_run_at");
+
+                    ZoneId zone;
+                    try { zone = ZoneId.of(zoneId); } catch (Exception e) { zone = defaultZone; }
+
                     String status;
-                    if (prompt != null) {
-                        status = switch (prompt.state()) {
-                            case STATE_SNOOZED ->
-                                "отложено до " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
-                            case STATE_GOING_DOING_DELAY -> "пошёл делать, проверка в "
-                                    + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(prompt.nextPingAt(), zone));
+                    if (promptState != null) {
+                        status = switch (promptState) {
+                            case STATE_SNOOZED -> "отложено до " + DATE_TIME_FMT.format(
+                                    ZonedDateTime.ofInstant(promptNextPing.toInstant(), zone));
+                            case STATE_GOING_DOING_DELAY -> "пошёл делать, проверка в " + DATE_TIME_FMT.format(
+                                    ZonedDateTime.ofInstant(promptNextPing.toInstant(), zone));
                             case STATE_CHECK_WAITING -> "ждёт подтверждения";
                             default -> "ждёт ответа";
                         };
-                    } else if (!done.isEmpty()) {
-                        CompletionRecord last = done.get(done.size() - 1);
-                        status = "сделано в " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(last.completedAt(), zone));
+                    } else if (lastCompleted != null) {
+                        status = "сделано в " + DATE_TIME_FMT.format(
+                                ZonedDateTime.ofInstant(lastCompleted.toInstant(), zone));
                     } else {
-                        status = "запланировано на " + DATE_TIME_FMT.format(ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
+                        status = "запланировано на " + DATE_TIME_FMT.format(
+                                ZonedDateTime.ofInstant(nextRunAt.toInstant(), zone));
                     }
-                    rows.add("• " + task.title() + " — " + status);
-                }
-                if (!rows.isEmpty()) {
-                    sections.add(displayUser(conn, profile.chatId()) + "\n" + String.join("\n", rows));
+
+                    String displayName = (username != null && !username.isBlank())
+                            ? "@" + username : firstName + " (" + uid + ")";
+                    userNames.putIfAbsent(uid, displayName);
+                    userSections.computeIfAbsent(uid, k -> new ArrayList<>())
+                            .add("• " + taskTitle + " — " + status);
                 }
             }
-            return sections.isEmpty() ? "На сегодня ни у кого нет активных дел."
-                    : "Дела на сегодня:\n\n" + String.join("\n\n", sections);
+            if (userSections.isEmpty()) return "На сегодня ни у кого нет активных дел.";
+            List<String> sections = new ArrayList<>();
+            for (var entry : userSections.entrySet()) {
+                sections.add(userNames.get(entry.getKey()) + "\n" + String.join("\n", entry.getValue()));
+            }
+            return "Дела на сегодня:\n\n" + String.join("\n\n", sections);
         } catch (java.sql.SQLException e) {
             return "Ошибка БД";
         }
-    }
-
-    private ActivePrompt findTodayPrompt(java.sql.Connection conn, String subscriptionId, LocalDate date, ZoneId zone) throws java.sql.SQLException {
-        return db.prompts().loadAll(conn).stream()
-                .filter(p -> p.subscriptionId().equals(subscriptionId))
-                .filter(p -> ZonedDateTime.ofInstant(p.scheduledFor(), zone).toLocalDate().equals(date))
-                .max(Comparator.comparing(ActivePrompt::scheduledFor))
-                .orElse(null);
-    }
-
-    private List<CompletionRecord> findTodayCompletions(java.sql.Connection conn, String subscriptionId, LocalDate date, ZoneId zone) throws java.sql.SQLException {
-        return db.completions().loadAll(conn, Instant.now().minus(Duration.ofDays(7)), 100).stream()
-                .filter(c -> c.subscriptionId().equals(subscriptionId))
-                .filter(c -> ZonedDateTime.ofInstant(c.scheduledFor(), zone).toLocalDate().equals(date))
-                .sorted(Comparator.comparing(CompletionRecord::completedAt))
-                .toList();
     }
 
     private String displayNameForSort(UserProfile profile) {
