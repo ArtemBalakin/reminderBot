@@ -45,7 +45,7 @@ public class ApiHandler implements HttpHandler {
                 case "/api/tasks" -> botService.apiGetTasksPage(intParam(q, "page", 0));
                 case "/api/task" -> botService.apiGetTaskCard(chatId, q.getOrDefault("ref", "1"));
                 case "/api/subs" -> botService.apiGetSubscriptions(chatId);
-                case "/api/today" -> botService.apiGetTodayBoard();
+                case "/api/today" -> botService.apiGetTodayBoard(chatId);
                 case "/api/board" -> botService.apiGetBoard();
                 case "/api/stats" -> botService.apiGetStats();
                 case "/api/calendar/eager" -> {

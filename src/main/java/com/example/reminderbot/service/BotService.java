@@ -134,6 +134,7 @@ public class BotService {
     public List<Map<String, Object>> apiGetSubscriptions(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             List<Map<String, Object>> result = new ArrayList<>();
+            List<TaskDefinition> allTasks = db.tasks().loadAll(conn);
             for (Subscription sub : db.subscriptions().findAllByChatId(conn, chatId)) {
                 if (!sub.active()) continue;
                 TaskDefinition task = findTask(conn, sub.taskId());
@@ -142,6 +143,15 @@ public class BotService {
                 m.put("taskId", sub.taskId());
                 m.put("taskTitle", task != null ? task.title() : sub.taskId());
                 m.put("schedule", task != null ? humanSchedule(sub, task) : "");
+                // Add task number for miniapp navigation
+                int taskNumber = 1;
+                for (int i = 0; i < allTasks.size(); i++) {
+                    if (allTasks.get(i).id().equals(sub.taskId())) {
+                        taskNumber = i + 1;
+                        break;
+                    }
+                }
+                m.put("taskNumber", taskNumber);
                 if (sub.nextRunAt() != null) {
                     m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
                             ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT));
@@ -363,56 +373,53 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiGetTodayBoard() {
+    public Map<String, Object> apiGetTodayBoard(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             Instant now = Instant.now();
             List<Map<String, Object>> sections = new ArrayList<>();
-            List<UserProfile> users = db.users().loadAll(conn).values().stream()
-                    .sorted(Comparator.comparing(this::displayNameForSort)).toList();
-            for (UserProfile profile : users) {
-                ZoneId zone;
-                try {
-                    zone = ZoneId.of(profile.zoneId());
-                } catch (DateTimeException e) {
-                    zone = defaultZone;
+            UserProfile profile = getProfile(conn, chatId);
+            ZoneId zone;
+            try {
+                zone = ZoneId.of(profile.zoneId());
+            } catch (DateTimeException e) {
+                zone = defaultZone;
+            }
+            LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
+                if (!sub.active()) continue;
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
+                List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
+                boolean hasTodayFuture = sub.nextRunAt() != null
+                        && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
+                if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
+                String status;
+                if (prompt != null) {
+                    status = switch (prompt.state()) {
+                        case "SNOOZED" -> "отложено";
+                        case "GOING_DOING_DELAY" -> "пошёл делать";
+                        case "CHECK_WAITING" -> "ждёт подтверждения";
+                        default -> "ждёт ответа";
+                    };
+                } else if (!done.isEmpty()) {
+                    status = "сделано";
+                } else {
+                    status = "запланировано на " + DATE_TIME_FMT.format(
+                            ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
                 }
-                LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
-                List<Map<String, Object>> rows = new ArrayList<>();
-                for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {
-                    if (!sub.active()) continue;
-                    TaskDefinition task = findTask(conn, sub.taskId());
-                    if (task == null || task.kind() == TaskKind.MANUAL) continue;
-                    ActivePrompt prompt = findTodayPrompt(conn, sub.id(), today, zone);
-                    List<CompletionRecord> done = findTodayCompletions(conn, sub.id(), today, zone);
-                    boolean hasTodayFuture = sub.nextRunAt() != null
-                            && ZonedDateTime.ofInstant(sub.nextRunAt(), zone).toLocalDate().equals(today);
-                    if (prompt == null && done.isEmpty() && !hasTodayFuture) continue;
-                    String status;
-                    if (prompt != null) {
-                        status = switch (prompt.state()) {
-                            case "SNOOZED" -> "отложено";
-                            case "GOING_DOING_DELAY" -> "пошёл делать";
-                            case "CHECK_WAITING" -> "ждёт подтверждения";
-                            default -> "ждёт ответа";
-                        };
-                    } else if (!done.isEmpty()) {
-                        status = "сделано";
-                    } else {
-                        status = "запланировано на " + DATE_TIME_FMT.format(
-                                ZonedDateTime.ofInstant(sub.nextRunAt(), zone));
-                    }
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("taskTitle", task.title());
-                    row.put("status", status);
-                    row.put("done", !done.isEmpty() && prompt == null);
-                    rows.add(row);
-                }
-                if (!rows.isEmpty()) {
-                    Map<String, Object> section = new LinkedHashMap<>();
-                    section.put("user", displayUser(conn, profile.chatId()));
-                    section.put("tasks", rows);
-                    sections.add(section);
-                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskTitle", task.title());
+                row.put("status", status);
+                row.put("done", !done.isEmpty() && prompt == null);
+                rows.add(row);
+            }
+            if (!rows.isEmpty()) {
+                Map<String, Object> section = new LinkedHashMap<>();
+                section.put("user", displayUser(conn, profile.chatId()));
+                section.put("tasks", rows);
+                sections.add(section);
             }
             return Map.of("sections", sections);
         } catch (java.sql.SQLException e) {

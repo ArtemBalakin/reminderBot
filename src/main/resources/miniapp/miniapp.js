@@ -367,7 +367,7 @@
     }
     let html = `<div class="page-header">Мои подписки <span style="font-size:14px;color:var(--hint);font-weight:400">${data.length}</span></div>`;
     for (const s of data) {
-      html += `<div class="card card-clickable" onclick="window.__showTask('${esc(s.taskId)}')">
+      html += `<div class="card card-clickable" onclick="window.__showTask('${s.taskNumber}')">
         <div class="card-title">${esc(s.taskTitle)}</div>
         <div class="card-sub">${esc(s.schedule)}</div>
         ${s.nextRunAt ? `<div class="card-sub" style="margin-top:2px">⏰ ${esc(s.nextRunAt)}</div>` : ''}
