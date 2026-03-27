@@ -11,3 +11,6 @@ databaseChangeLog:
   - include:
       file: 004-drop-days-columns.yaml
       relativeToChangelogFile: true
+  - include:
+      file: 005-today-board-indexes.yaml
+      relativeToChangelogFile: true

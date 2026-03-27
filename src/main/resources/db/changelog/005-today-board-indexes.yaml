@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-001-add-completion-records-subscription-index
+      author: ai
+      changes:
+        - createIndex:
+            tableName: completion_records
+            indexName: idx_completion_records_subscription_id
+            columns:
+              - column:
+                  name: subscription_id

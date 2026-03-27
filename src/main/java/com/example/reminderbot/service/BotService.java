@@ -382,7 +382,8 @@ public class BotService {
                     FROM prompts p
                     JOIN subscriptions s ON s.id = p.subscription_id
                     JOIN users u ON u.chat_id = s.chat_id
-                    WHERE (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    WHERE p.scheduled_for BETWEEN NOW() - INTERVAL '2 days' AND NOW() + INTERVAL '1 day'
+                      AND (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                     ORDER BY p.subscription_id, p.scheduled_for DESC
                 ),
                 today_completions AS (
@@ -390,7 +391,8 @@ public class BotService {
                     FROM completion_records cr
                     JOIN subscriptions s ON s.id = cr.subscription_id
                     JOIN users u ON u.chat_id = s.chat_id
-                    WHERE (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    WHERE cr.scheduled_for BETWEEN NOW() - INTERVAL '2 days' AND NOW() + INTERVAL '1 day'
+                      AND (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                     GROUP BY cr.subscription_id
                 )
                 SELECT
@@ -400,6 +402,7 @@ public class BotService {
                     tp.state AS prompt_state,
                     COALESCE(tc.cnt, 0) AS completion_count,
                     CASE WHEN s.next_run_at IS NOT NULL
+                         AND s.next_run_at BETWEEN NOW() - INTERVAL '1 day' AND NOW() + INTERVAL '1 day'
                          AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                          THEN true ELSE false END AS has_today_future
                 FROM subscriptions s
@@ -411,6 +414,7 @@ public class BotService {
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
                        OR (s.next_run_at IS NOT NULL
+                           AND s.next_run_at BETWEEN NOW() - INTERVAL '1 day' AND NOW() + INTERVAL '1 day'
                            AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date))
                 ORDER BY COALESCE(u.username, u.first_name, u.chat_id::text), t.title
                 """;
@@ -2574,7 +2578,8 @@ public class BotService {
                     FROM prompts p
                     JOIN subscriptions s ON s.id = p.subscription_id
                     JOIN users u ON u.chat_id = s.chat_id
-                    WHERE (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    WHERE p.scheduled_for BETWEEN NOW() - INTERVAL '2 days' AND NOW() + INTERVAL '1 day'
+                      AND (p.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                     ORDER BY p.subscription_id, p.scheduled_for DESC
                 ),
                 today_completions AS (
@@ -2582,7 +2587,8 @@ public class BotService {
                     FROM completion_records cr
                     JOIN subscriptions s ON s.id = cr.subscription_id
                     JOIN users u ON u.chat_id = s.chat_id
-                    WHERE (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
+                    WHERE cr.scheduled_for BETWEEN NOW() - INTERVAL '2 days' AND NOW() + INTERVAL '1 day'
+                      AND (cr.scheduled_for AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                     GROUP BY cr.subscription_id
                 )
                 SELECT
@@ -2593,6 +2599,7 @@ public class BotService {
                     tp.next_ping_at AS prompt_next_ping,
                     tc.last_completed_at,
                     CASE WHEN s.next_run_at IS NOT NULL
+                         AND s.next_run_at BETWEEN NOW() - INTERVAL '1 day' AND NOW() + INTERVAL '1 day'
                          AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date
                          THEN true ELSE false END AS has_today_future
                 FROM subscriptions s
@@ -2604,6 +2611,7 @@ public class BotService {
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
                        OR (s.next_run_at IS NOT NULL
+                           AND s.next_run_at BETWEEN NOW() - INTERVAL '1 day' AND NOW() + INTERVAL '1 day'
                            AND (s.next_run_at AT TIME ZONE u.zone_id)::date = (NOW() AT TIME ZONE u.zone_id)::date))
                 ORDER BY COALESCE(u.username, u.first_name, u.chat_id::text), t.title
                 """;
