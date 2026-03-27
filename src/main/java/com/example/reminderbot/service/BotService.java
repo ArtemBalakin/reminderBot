@@ -370,7 +370,12 @@ public class BotService {
             List<UserProfile> users = db.users().loadAll(conn).values().stream()
                     .sorted(Comparator.comparing(this::displayNameForSort)).toList();
             for (UserProfile profile : users) {
-                ZoneId zone = ZoneId.of(profile.zoneId());
+                ZoneId zone;
+                try {
+                    zone = ZoneId.of(profile.zoneId());
+                } catch (DateTimeException e) {
+                    zone = defaultZone;
+                }
                 LocalDate today = ZonedDateTime.ofInstant(now, zone).toLocalDate();
                 List<Map<String, Object>> rows = new ArrayList<>();
                 for (Subscription sub : db.subscriptions().findAllByChatId(conn, profile.chatId())) {

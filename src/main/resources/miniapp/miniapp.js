@@ -19,8 +19,12 @@
 
   // try to get chatId from Telegram or from URL for debug
   const params = new URLSearchParams(location.search);
-  if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
-    chatId = tg.initDataUnsafe.user.id;
+  if (tg && tg.initDataUnsafe) {
+    if (tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) {
+      chatId = tg.initDataUnsafe.user.id;
+    } else if (tg.initDataUnsafe.chat && tg.initDataUnsafe.chat.id) {
+      chatId = tg.initDataUnsafe.chat.id;
+    }
   } else {
     if (params.get('chatId')) chatId = parseInt(params.get('chatId'), 10) || 0;
   }
@@ -61,20 +65,31 @@
     currentPage = page;
     nav.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === page));
     app.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+    let pageRender;
     switch (page) {
-      case 'tasks': renderTasks(params); break;
-      case 'task': renderTaskCard(params); break;
-      case 'subs': renderSubs(); break;
-      case 'today': renderToday(); break;
-      case 'board': renderBoard(); break;
-      case 'stats': renderStats(); break;
-      case 'calendar': renderCalendar(); break;
-      case 'settings': renderSettings(); break;
-      case 'newTask': renderNewTask(); break;
-      case 'editTask': renderEditTask(params); break;
-      case 'subscribe': renderSubscribe(params); break;
-      default: renderTasks();
+      case 'tasks': pageRender = renderTasks(params); break;
+      case 'task': pageRender = renderTaskCard(params); break;
+      case 'subs': pageRender = renderSubs(); break;
+      case 'today': pageRender = renderToday(); break;
+      case 'board': pageRender = renderBoard(); break;
+      case 'stats': pageRender = renderStats(); break;
+      case 'calendar': pageRender = renderCalendar(); break;
+      case 'settings': pageRender = renderSettings(); break;
+      case 'newTask': pageRender = renderNewTask(); break;
+      case 'editTask': pageRender = renderEditTask(params); break;
+      case 'subscribe': pageRender = renderSubscribe(params); break;
+      default: pageRender = renderTasks();
     }
+    Promise.resolve(pageRender).catch(err => {
+      console.error('MiniApp render failed on page:', page, err);
+      app.innerHTML = `
+        <div class="page-header">Ошибка</div>
+        <div class="empty">
+          <div class="empty-icon">⚠️</div>
+          <div class="empty-text">Не удалось загрузить экран. Попробуй ещё раз.</div>
+        </div>`;
+      toast('Ошибка загрузки экрана');
+    });
   }
 
   function pushPage(page, params) {
