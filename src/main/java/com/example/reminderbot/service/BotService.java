@@ -92,8 +92,7 @@ public class BotService {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = resolveTask(conn, ref);
             if (task == null) return Map.of("error", "Не нашёл дело: " + ref);
-            long subscribers = db.subscriptions().loadAll(conn).stream()
-                    .filter(s -> s.taskId().equals(task.id()) && s.active()).count();
+            long subscribers = db.subscriptions().countActiveByTaskId(conn, task.id());
             Subscription own = findUserSubscription(conn, chatId, task.id());
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("id", task.id());
@@ -111,12 +110,13 @@ public class BotService {
                 result.put("scheduleInterval", task.schedule().interval());
             }
             if (own != null) {
+                String zoneId = userZone(conn, own.chatId());
                 Map<String, Object> sub = new LinkedHashMap<>();
                 sub.put("id", own.id());
-                sub.put("schedule", humanSchedule(own, task));
+                sub.put("schedule", humanSchedule(conn, own, task));
                 if (own.nextRunAt() != null) {
                     sub.put("nextRunAt", ZonedDateTime.ofInstant(own.nextRunAt(),
-                            ZoneId.of(own.zoneId())).format(DATE_TIME_FMT));
+                            ZoneId.of(zoneId)).format(DATE_TIME_FMT));
                 }
                 if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
                 if (own.daysOfWeek() != null) sub.put("daysOfWeek", own.daysOfWeek());
@@ -135,14 +135,17 @@ public class BotService {
         try (java.sql.Connection conn = db.getConnection()) {
             List<Map<String, Object>> result = new ArrayList<>();
             List<TaskDefinition> allTasks = db.tasks().loadAll(conn);
+            Map<String, TaskDefinition> tasksById = new HashMap<>();
+            for (TaskDefinition task : allTasks) tasksById.put(task.id(), task);
+            String zoneId = userZone(conn, chatId);
             for (Subscription sub : db.subscriptions().findAllByChatId(conn, chatId)) {
                 if (!sub.active()) continue;
-                TaskDefinition task = findTask(conn, sub.taskId());
+                TaskDefinition task = tasksById.get(sub.taskId());
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("subscriptionId", sub.id());
                 m.put("taskId", sub.taskId());
                 m.put("taskTitle", task != null ? task.title() : sub.taskId());
-                m.put("schedule", task != null ? humanSchedule(sub, task) : "");
+                m.put("schedule", task != null ? humanSchedule(conn, sub, task) : "");
                 // Add task number for miniapp navigation
                 int taskNumber = 1;
                 for (int i = 0; i < allTasks.size(); i++) {
@@ -154,7 +157,7 @@ public class BotService {
                 m.put("taskNumber", taskNumber);
                 if (sub.nextRunAt() != null) {
                     m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
-                            ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT));
+                            ZoneId.of(zoneId)).format(DATE_TIME_FMT));
                 }
                 result.add(m);
             }
@@ -240,10 +243,10 @@ public class BotService {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
             result.put("taskTitle", task.title());
-            result.put("schedule", humanSchedule(updated, task));
+            result.put("schedule", humanSchedule(conn, updated, task));
             if (updated.nextRunAt() != null) {
                 result.put("nextRunAt", ZonedDateTime.ofInstant(updated.nextRunAt(),
-                        ZoneId.of(updated.zoneId())).format(DATE_TIME_FMT));
+                        ZoneId.of(profile.zoneId())).format(DATE_TIME_FMT));
             }
             return result;
         } catch (java.sql.SQLException e) {
@@ -528,11 +531,11 @@ public class BotService {
             for (Subscription sub : subscriptions) {
                 if (sub.active()) taskCounts.merge(sub.taskId(), calcSubSlots(sub), Integer::sum);
             }
+            Map<String, TaskDefinition> tasksById = db.tasks().findAllByIds(conn, taskCounts.keySet());
             List<Map<String, Object>> items = taskCounts.entrySet().stream()
                     .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
                     .map(e -> {
-                        TaskDefinition task;
-                        try { task = findTask(conn, e.getKey()); } catch (Exception ex) { task = null; }
+                        TaskDefinition task = tasksById.get(e.getKey());
                         Map<String, Object> m = new LinkedHashMap<>();
                         m.put("taskTitle", task != null ? task.title() : e.getKey());
                         m.put("count", e.getValue());
@@ -684,7 +687,7 @@ public class BotService {
                 
                 db.prompts().upsert(conn, prompt);
                 try {
-                    Subscription advanced = advanceSubscription(sub, task, sub.nextRunAt(), now);
+                    Subscription advanced = advanceSubscription(conn, sub, task, sub.nextRunAt(), now);
                     db.subscriptions().upsert(conn, advanced);
                     System.out.println("[processDueItems] Advanced sub " + sub.id() + " (" + task.title() + ") nextRunAt: " + sub.nextRunAt() + " -> " + advanced.nextRunAt());
                 } catch (Exception e) {
@@ -693,7 +696,7 @@ public class BotService {
                     // Fallback: move nextRunAt to tomorrow to prevent infinite re-triggering
                     Instant fallback = now.plus(Duration.ofDays(1));
                     Subscription fallbackSub = new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(),
-                            sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), fallback, sub.active(), sub.oneTimeDone(),
+                            sub.dayOfWeek(), sub.dayOfMonth(), fallback, sub.active(), sub.oneTimeDone(),
                             sub.daysOfWeek(), sub.daysOfMonth());
                     db.subscriptions().upsert(conn, fallbackSub);
                     System.err.println("[processDueItems] Fallback nextRunAt for sub " + sub.id() + ": " + fallback);
@@ -1157,7 +1160,7 @@ public class BotService {
             if (message.messageId() != null) {
                 telegram.deleteMessage(chatId, message.messageId());
             }
-            telegram.sendMessage(chatId, subscriptionSummary(updated, task));
+            telegram.sendMessage(chatId, subscriptionSummary(conn, updated, task));
         } catch (Exception e) {
             telegram.sendMessage(chatId, "Не смог сохранить настройку из Mini App: " + e.getMessage());
         }
@@ -1348,7 +1351,6 @@ public class BotService {
                 normalized,
                 null,
                 null,
-                profile.zoneId(),
                 next,
                 true,
                 false,
@@ -1361,7 +1363,7 @@ public class BotService {
         Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         Instant next = computeNextWeekly(times, daysOfWeek, task.schedule().interval(), zone, Instant.now());
         return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                times, null, null, profile.zoneId(), next, true, false, daysOfWeek, null);
+                times, null, null, next, true, false, daysOfWeek, null);
     }
 
     private Subscription buildMonthlySubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, List<String> times, List<Integer> daysOfMonth) throws java.sql.SQLException {
@@ -1369,7 +1371,7 @@ public class BotService {
         Subscription existing = findUserSubscription(conn, profile.chatId(), task.id());
         Instant next = computeNextMonthly(times, daysOfMonth, task.schedule().interval(), zone, Instant.now());
         return new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                times, null, null, profile.zoneId(), next, true, false, null, daysOfMonth);
+                times, null, null, next, true, false, null, daysOfMonth);
     }
 
     private Subscription buildDatedSubscription(java.sql.Connection conn, UserProfile profile, TaskDefinition task, LocalDate date,
@@ -1384,21 +1386,21 @@ public class BotService {
             case RECURRING -> {
                 if (task.schedule().unit() == FrequencyUnit.WEEK) {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(),
+                            List.of(time.format(TIME_FMT)), null, null,
                             chosen.toInstant(), true, false, List.of(date.getDayOfWeek().name()), null);
                 } else if (task.schedule().unit() == FrequencyUnit.MONTH) {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(),
+                            List.of(time.format(TIME_FMT)), null, null,
                             chosen.toInstant(), true, false, null, List.of(date.getDayOfMonth()));
                 } else {
                     yield new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                            List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true,
+                            List.of(time.format(TIME_FMT)), null, null, chosen.toInstant(), true,
                             false, null, null);
                 }
             }
             case ONE_TIME_THIS_WEEK, ONE_TIME_NEXT_WEEK ->
                 new Subscription(existing == null ? shortId() : existing.id(), task.id(), profile.chatId(),
-                        List.of(time.format(TIME_FMT)), null, null, profile.zoneId(), chosen.toInstant(), true, false, null, null);
+                        List.of(time.format(TIME_FMT)), null, null, chosen.toInstant(), true, false, null, null);
             case MANUAL -> throw new IllegalArgumentException("Для ручного дела нельзя задать дату");
         };
     }
@@ -1476,7 +1478,7 @@ public class BotService {
                     humanTaskKind(task.kind()),
                     subscribers,
                     task.note() == null || task.note().isBlank() ? "" : ("Заметка: " + task.note()),
-                    own == null ? "У тебя пока нет своей настройки." : ("Твоя настройка: " + humanSchedule(own, task)));
+                    own == null ? "У тебя пока нет своей настройки." : ("Твоя настройка: " + humanSchedule(conn, own, task)));
             List<List<Map<String, Object>>> rows = new ArrayList<>();
             if (task.kind() != TaskKind.MANUAL) {
                 rows.add(
@@ -1509,7 +1511,7 @@ public class BotService {
                 return;
             }
             String body = subs.stream().map(s -> {
-                try { return "• " + displayUser(conn, s.chatId()) + " — " + humanSchedule(s, task); }
+                try { return "• " + displayUser(conn, s.chatId()) + " — " + humanSchedule(conn, s, task); }
                 catch (Exception e) { return ""; }
             }).collect(Collectors.joining("\n\n"));
             telegram.sendMessage(chatId, "Кто подписан на «" + task.title() + "»:\n\n" + body);
@@ -1653,16 +1655,17 @@ public class BotService {
                 List.of(TelegramClient.button("⏳ Отложить", "PROMPT_MORE:" + promptId))));
     }
 
-    private Subscription advanceSubscription(Subscription sub, TaskDefinition task, Instant previousScheduledFor,
-            Instant now) {
+    private Subscription advanceSubscription(java.sql.Connection conn, Subscription sub, TaskDefinition task, Instant previousScheduledFor,
+            Instant now) throws java.sql.SQLException {
+        String zoneId = userZone(conn, sub.chatId());
         if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
             return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(),
-                    sub.dayOfMonth(), sub.zoneId(), sub.nextRunAt(), sub.active(), true, sub.daysOfWeek(), sub.daysOfMonth());
+                    sub.dayOfMonth(), sub.nextRunAt(), sub.active(), true, sub.daysOfWeek(), sub.daysOfMonth());
         }
         if (task.kind() == TaskKind.MANUAL) {
             return sub;
         }
-        ZoneId zone = ZoneId.of(sub.zoneId());
+        ZoneId zone = ZoneId.of(zoneId);
         Instant base = previousScheduledFor.plusSeconds(1);
         Instant next = switch (task.schedule().unit()) {
             case DAY -> computeNextDaily(sub.dailyTimes(), task.schedule().interval(), zone, base);
@@ -1670,7 +1673,7 @@ public class BotService {
             case MONTH -> computeNextMonthly(sub.dailyTimes(), sub.daysOfMonth(), task.schedule().interval(), zone, base);
         };
         return new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(), sub.dayOfWeek(),
-                sub.dayOfMonth(), sub.zoneId(), next, sub.active(), false, sub.daysOfWeek(), sub.daysOfMonth());
+                sub.dayOfMonth(), next, sub.active(), false, sub.daysOfWeek(), sub.daysOfMonth());
     }
 
     private Instant computeNextDaily(List<String> times, int intervalDays, ZoneId zone, Instant base) {
@@ -1791,8 +1794,7 @@ public class BotService {
     }
 
     private Subscription findUserSubscription(java.sql.Connection conn, long chatId, String taskId) throws java.sql.SQLException {
-        return db.subscriptions().findAllByChatId(conn, chatId).stream()
-                .filter(s -> s.taskId().equals(taskId) && s.active()).findFirst().orElse(null);
+        return db.subscriptions().findActiveByChatAndTask(conn, chatId, taskId);
     }
 
     private Subscription findSubscription(java.sql.Connection conn, String id) throws java.sql.SQLException {
@@ -1853,8 +1855,9 @@ public class BotService {
         };
     }
 
-    private String humanSchedule(Subscription sub, TaskDefinition task) {
-        ZoneId zone = ZoneId.of(sub.zoneId());
+    private String humanSchedule(java.sql.Connection conn, Subscription sub, TaskDefinition task) throws java.sql.SQLException {
+        String zoneId = userZone(conn, sub.chatId());
+        ZoneId zone = ZoneId.of(zoneId);
         int slots = sub.dailyTimes().size();
         String slotsText = slots > 1 ? " (" + slots + " раз)" : "";
         return switch (task.kind()) {
@@ -1863,13 +1866,13 @@ public class BotService {
                 "один раз: " + ZonedDateTime.ofInstant(sub.nextRunAt(), zone).format(DATE_TIME_FMT);
             case RECURRING -> switch (task.schedule().unit()) {
                 case DAY -> "каждые " + task.schedule().interval() + " дн. в " + String.join(", ", sub.dailyTimes())
-                        + slotsText + " (" + sub.zoneId() + ")";
+                        + slotsText + " (" + zoneId + ")";
                 case WEEK -> "каждые " + task.schedule().interval() + " нед. по " + 
                         (sub.daysOfWeek() != null ? sub.daysOfWeek().stream().map(this::dayRu).collect(Collectors.joining(", ")) : dayRu(sub.dayOfWeek())) + 
-                        " в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + sub.zoneId() + ")";
+                        " в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + zoneId + ")";
                 case MONTH -> "каждые " + task.schedule().interval() + " мес. " + 
                         (sub.daysOfMonth() != null ? sub.daysOfMonth().stream().map(String::valueOf).collect(Collectors.joining(", ")) : sub.dayOfMonth()) + 
-                        " числа в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + sub.zoneId() + ")";
+                        " числа в " + String.join(", ", sub.dailyTimes()) + slotsText + " (" + zoneId + ")";
             };
         };
     }
@@ -1883,10 +1886,11 @@ public class BotService {
         for (Subscription sub : own) {
             TaskDefinition task = findTask(conn, sub.taskId());
             sb.append(i++).append(". ").append(task == null ? sub.taskId() : task.title()).append("\n")
-                    .append("   ").append(task == null ? "" : humanSchedule(sub, task)).append("\n");
+                    .append("   ").append(task == null ? "" : humanSchedule(conn, sub, task)).append("\n");
             if (sub.nextRunAt() != null) {
+                String zoneId = userZone(conn, sub.chatId());
                 sb.append("   Ближайший пинг: ")
-                        .append(ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT))
+                        .append(ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(zoneId)).format(DATE_TIME_FMT))
                         .append("\n");
             }
             sb.append("\n");
@@ -1894,10 +1898,11 @@ public class BotService {
         return sb.toString().strip();
     }
 
-    private String subscriptionSummary(Subscription sub, TaskDefinition task) {
-        return "✅ Настройка сохранена\n\n" + task.title() + "\n" + humanSchedule(sub, task) +
+    private String subscriptionSummary(java.sql.Connection conn, Subscription sub, TaskDefinition task) throws java.sql.SQLException {
+        String zoneId = userZone(conn, sub.chatId());
+        return "✅ Настройка сохранена\n\n" + task.title() + "\n" + humanSchedule(conn, sub, task) +
                 "\nБлижайший пинг: "
-                + ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(sub.zoneId())).format(DATE_TIME_FMT);
+                + ZonedDateTime.ofInstant(sub.nextRunAt(), ZoneId.of(zoneId)).format(DATE_TIME_FMT);
     }
 
     private void setAlertsEnabled(long chatId, boolean enabled) {
@@ -2139,7 +2144,7 @@ public class BotService {
                 try {
                     Subscription current = sub;
                     while (current.nextRunAt() != null && current.nextRunAt().isBefore(now)) {
-                        current = advanceSubscription(current, task, current.nextRunAt(), now);
+                        current = advanceSubscription(conn, current, task, current.nextRunAt(), now);
                         if (current.oneTimeDone()) break;
                     }
                     db.subscriptions().upsert(conn, current);
@@ -2151,7 +2156,7 @@ public class BotService {
                     // Fallback: move nextRunAt to tomorrow to prevent infinite re-triggering
                     Instant fallback = now.plus(Duration.ofDays(1));
                     Subscription fallbackSub = new Subscription(sub.id(), sub.taskId(), sub.chatId(), sub.dailyTimes(),
-                            sub.dayOfWeek(), sub.dayOfMonth(), sub.zoneId(), fallback, sub.active(), sub.oneTimeDone(),
+                            sub.dayOfWeek(), sub.dayOfMonth(), fallback, sub.active(), sub.oneTimeDone(),
                             sub.daysOfWeek(), sub.daysOfMonth());
                     db.subscriptions().upsert(conn, fallbackSub);
                     System.err.println("[fastforward] Fallback nextRunAt for sub " + sub.id() + ": " + fallback);
@@ -2205,7 +2210,6 @@ public class BotService {
                 sub.dailyTimes(),
                 sub.dayOfWeek(),
                 sub.dayOfMonth(),
-                sub.zoneId(),
                 sub.nextRunAt(),
                 sub.active(),
                 sub.oneTimeDone(),
@@ -2220,7 +2224,7 @@ public class BotService {
         String message = "✅ Дело изменено\n\n" +
                 "Было: " + (oldTask != null ? oldTask.title() : sub.taskId()) + "\n" +
                 "Стало: " + newTask.title() + "\n\n" +
-                humanSchedule(updated, newTask);
+                humanSchedule(conn, updated, newTask);
         if (callbackId != null) {
             telegram.answerCallbackQuery(callbackId, "Изменено");
         }
@@ -2230,7 +2234,8 @@ public class BotService {
     private String subscriberStatsText() {
         try (java.sql.Connection conn = db.getConnection()) {
             Map<String, Integer> taskCounts = new HashMap<>();
-            for (Subscription sub : db.subscriptions().loadAll(conn)) {
+            List<Subscription> subscriptions = db.subscriptions().loadAll(conn);
+            for (Subscription sub : subscriptions) {
                 if (sub.active()) {
                     taskCounts.merge(sub.taskId(), 1, Integer::sum);
                 }
@@ -2246,9 +2251,10 @@ public class BotService {
 
             StringBuilder sb = new StringBuilder("📊 Статистика подписчиков:\n\n");
             int maxCount = sorted.get(0).getValue();
+            Map<String, TaskDefinition> tasksById = db.tasks().findAllByIds(conn, taskCounts.keySet());
 
             for (Map.Entry<String, Integer> entry : sorted) {
-                TaskDefinition task = findTask(conn, entry.getKey());
+                TaskDefinition task = tasksById.get(entry.getKey());
                 String title = task != null ? task.title() : entry.getKey();
                 int count = entry.getValue();
                 int barLength = maxCount > 0 ? (count * 20) / maxCount : 0;
@@ -2258,7 +2264,7 @@ public class BotService {
                 sb.append(bar).append(" ").append(count).append(" чел.\n\n");
             }
 
-            long total = db.subscriptions().loadAll(conn).stream().filter(Subscription::active).count();
+            long total = subscriptions.stream().filter(Subscription::active).count();
             sb.append("Всего активных подписок: ").append(total);
             return sb.toString();
         } catch (java.sql.SQLException e) {

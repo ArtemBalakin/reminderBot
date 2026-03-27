@@ -11,7 +11,6 @@ public record Subscription(
         List<String> dailyTimes,
         String dayOfWeek,
         Integer dayOfMonth,
-        String zoneId,
         Instant nextRunAt,
         boolean active,
         boolean oneTimeDone,

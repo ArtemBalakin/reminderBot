@@ -4,7 +4,10 @@ import com.example.reminderbot.model.*;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class TaskDao {
     public TaskDao() {}
@@ -55,6 +58,38 @@ public class TaskDao {
             }
         }
         return null;
+    }
+
+    public Map<String, TaskDefinition> findAllByIds(Connection conn, Set<String> ids) throws SQLException {
+        if (ids == null || ids.isEmpty()) return Map.of();
+        Map<String, TaskDefinition> tasks = new HashMap<>();
+        String sql = """
+            SELECT id, title, kind, frequency_unit, frequency_interval, recommended_slots, note
+            FROM tasks
+            WHERE active = true AND id = ANY (?)
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setArray(1, conn.createArrayOf("text", ids.toArray()));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String unitStr = rs.getString("frequency_unit");
+                    Integer interval = (Integer) rs.getObject("frequency_interval");
+                    ScheduleRule schedule = unitStr != null && interval != null
+                            ? new ScheduleRule(FrequencyUnit.valueOf(unitStr), interval)
+                            : null;
+                    TaskDefinition task = new TaskDefinition(
+                            rs.getString("id"),
+                            rs.getString("title"),
+                            TaskKind.valueOf(rs.getString("kind")),
+                            schedule,
+                            rs.getInt("recommended_slots"),
+                            rs.getString("note")
+                    );
+                    tasks.put(task.id(), task);
+                }
+            }
+        }
+        return tasks;
     }
 
     public void upsert(Connection conn, TaskDefinition task) throws SQLException {

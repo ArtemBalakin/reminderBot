@@ -14,3 +14,6 @@ databaseChangeLog:
   - include:
       file: 005-today-board-indexes.yaml
       relativeToChangelogFile: true
+  - include:
+      file: 006-drop-subscription-zone.yaml
+      relativeToChangelogFile: true
