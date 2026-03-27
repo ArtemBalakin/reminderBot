@@ -39,9 +39,8 @@ public class BotService {
         this.db = db;
         this.defaultZone = defaultZone;
         this.appBaseUrl = appBaseUrl.endsWith("/") ? appBaseUrl.substring(0, appBaseUrl.length() - 1) : appBaseUrl;
-        
-        // Always try to set the menu button to the MiniApp to make it static
-        this.telegram.setChatMenuButton("Открыть приложение", this.appBaseUrl + "/app");
+
+        // Menu button is configured externally (BotFather). Avoid overriding it here to prevent duplicates.
     }
 
     public long getLastUpdateId() {
@@ -1334,7 +1333,7 @@ public class BotService {
                 params.put("time", zdt.toLocalTime().format(TIME_FMT));
             }
         }
-        return appBaseUrl + "/miniapp?" + params.entrySet().stream()
+        return appBaseUrl + "/app?" + params.entrySet().stream()
                 .map(e -> TelegramClient.encode(e.getKey()) + "=" + TelegramClient.encode(e.getValue()))
                 .collect(Collectors.joining("&"));
     }

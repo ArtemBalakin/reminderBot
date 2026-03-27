@@ -31,8 +31,10 @@ public class HtmlHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         // Obsolete handler, redirecting to /app
-        log.info("Обращение к устаревшему endpoint, перенаправление на /app");
-        exchange.getResponseHeaders().set("Location", "/app");
+        String query = exchange.getRequestURI().getRawQuery();
+        String location = query == null || query.isBlank() ? "/app" : "/app?" + query;
+        log.info("Обращение к устаревшему endpoint, перенаправление на {}", location);
+        exchange.getResponseHeaders().set("Location", location);
         exchange.sendResponseHeaders(302, -1);
     }
 
