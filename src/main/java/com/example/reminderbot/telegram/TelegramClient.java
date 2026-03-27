@@ -31,7 +31,9 @@ public class TelegramClient {
 
     public TelegramClient(String token) {
         this.token = token;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(120))
+                .build();
         this.mapper = new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         this.baseUrl = "https://api.telegram.org/bot" + token + "/";
         this.fileBaseUrl = "https://api.telegram.org/file/bot" + token + "/";
