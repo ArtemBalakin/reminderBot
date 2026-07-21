@@ -44,7 +44,7 @@ public class Main {
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
 
         BotService botService = new BotService(telegram, databaseStore, ZoneId.of(zone), appBaseUrl);
-        MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService);
+        MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService, token);
         miniAppServer.start();
 
         executor.submit(new UpdatePoller(telegram, botService));

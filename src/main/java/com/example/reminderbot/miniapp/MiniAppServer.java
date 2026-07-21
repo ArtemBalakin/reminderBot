@@ -22,7 +22,7 @@ public class MiniAppServer {
     private final HttpServer server;
     private final Map<String, byte[]> staticCache = new HashMap<>();
 
-    public MiniAppServer(int port, Executor executor, BotService botService) {
+    public MiniAppServer(int port, Executor executor, BotService botService, String botToken) {
         try {
             this.server = HttpServer.create(new InetSocketAddress(port), 0);
         } catch (IOException e) {
@@ -44,7 +44,7 @@ public class MiniAppServer {
         this.server.createContext("/health", this::handleHealth);
         this.server.createContext("/app", exchange -> htmlHandler.handleApp(exchange));
         this.server.createContext("/static/", new StaticFileHandler(staticCache));
-        this.server.createContext("/api/", new ApiHandler(botService, new ObjectMapper()));
+        this.server.createContext("/api/", new ApiHandler(botService, new ObjectMapper(), botToken));
     }
 
     public void start() {

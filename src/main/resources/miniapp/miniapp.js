@@ -8,7 +8,11 @@
   if (tg) { tg.ready(); tg.expand(); }
 
   /* ── State ──────────────────────────────────────────────────── */
-  let chatId = 0;
+  // The server never trusts a client-supplied chatId — every request carries
+  // the raw, HMAC-signed tg.initData string, and the backend verifies it
+  // against the bot token to derive the real user. initDataUnsafe is only
+  // used below for cosmetic, non-authenticated purposes (there are none here).
+  const initData = tg ? tg.initData : '';
   const app = document.getElementById('app');
   const nav = document.getElementById('nav');
   let currentPage = 'tasks';
@@ -17,25 +21,18 @@
   let startPage = 'tasks';
   let startParams = null;
 
-  // try to get chatId from Telegram or from URL for debug
   const params = new URLSearchParams(location.search);
-  if (tg && tg.initDataUnsafe) {
-    if (tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) {
-      chatId = tg.initDataUnsafe.user.id;
-    } else if (tg.initDataUnsafe.chat && tg.initDataUnsafe.chat.id) {
-      chatId = tg.initDataUnsafe.chat.id;
-    }
-  } else {
-    if (params.get('chatId')) chatId = parseInt(params.get('chatId'), 10) || 0;
-  }
   if (params.get('page')) startPage = params.get('page');
   if (params.get('ref')) startParams = { ref: params.get('ref') };
   if (params.get('taskId')) startParams = { taskId: params.get('taskId') };
 
   /* ── API helper ─────────────────────────────────────────────── */
   async function api(path, body) {
+    if (!initData) {
+      throw new Error('Открой приложение через кнопку в Telegram-боте.');
+    }
     const sep = path.includes('?') ? '&' : '?';
-    const url = path + sep + 'chatId=' + chatId;
+    const url = path + sep + 'initData=' + encodeURIComponent(initData);
     const opts = body
       ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       : {};
@@ -247,8 +244,9 @@
         </div>
         <div id="time-chips" class="time-chips"></div>`;
     } else {
-      const existingDate = data.mySubscription && data.mySubscription.nextRunAt
-        ? '' : new Date().toISOString().slice(0, 10);
+      const existingDate = (data.mySubscription && data.mySubscription.nextRunDate)
+        || new Date().toISOString().slice(0, 10);
+      const existingTime = (data.mySubscription && data.mySubscription.nextRunTime) || '';
       html += `
         <div class="input-group" style="margin-top:16px">
           <label>Дата</label>
@@ -256,7 +254,7 @@
         </div>
         <div class="input-group">
           <label>Время</label>
-          <input type="time" id="sub-dated-time" class="input" step="60">
+          <input type="time" id="sub-dated-time" class="input" step="60" value="${existingTime}">
         </div>`;
     }
     html += `<button class="btn btn-primary" style="margin-top:16px" onclick="window.__saveSub('${data.number}', '${data.kind}', '${data.scheduleUnit}')">Сохранить</button>`;
@@ -626,12 +624,12 @@
     html += `<div class="input-group">
       <label>Тип</label>
       <div class="select-grid">
-        <button class="btn btn-secondary kind-btn active" data-kind="DAY" onclick="window.__selectKind(this)">Каждый N день</button>
-        <button class="btn btn-secondary kind-btn" data-kind="WEEK" onclick="window.__selectKind(this)">Каждую N нед.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MONTH" onclick="window.__selectKind(this)">Каждый N мес.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">Разово на этой</button>
-        <button class="btn btn-secondary kind-btn" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">Разово на след.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MANUAL" onclick="window.__selectKind(this)">Ручное</button>
+        <button class="btn btn-secondary kind-btn active" data-kind="DAY" onclick="window.__selectKind(this)">🔁 Каждый N день</button>
+        <button class="btn btn-secondary kind-btn" data-kind="WEEK" onclick="window.__selectKind(this)">📆 Каждую N нед.</button>
+        <button class="btn btn-secondary kind-btn" data-kind="MONTH" onclick="window.__selectKind(this)">🗓 Каждый N мес.</button>
+        <button class="btn btn-secondary kind-btn" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">⚡ Разово на этой</button>
+        <button class="btn btn-secondary kind-btn" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">⏭ Разово на след.</button>
+        <button class="btn btn-secondary kind-btn" data-kind="MANUAL" onclick="window.__selectKind(this)">🖐 Ручное</button>
       </div>
     </div>`;
     html += `<div id="interval-group" class="input-group">
@@ -702,12 +700,12 @@
     html += `<div class="input-group">
       <label>Тип</label>
       <div class="select-grid">
-        <button class="btn btn-secondary kind-btn ${currentKind === 'DAY' ? 'active' : ''}" data-kind="DAY" onclick="window.__selectKind(this)">Каждый N день</button>
-        <button class="btn btn-secondary kind-btn ${currentKind === 'WEEK' ? 'active' : ''}" data-kind="WEEK" onclick="window.__selectKind(this)">Каждую N нед.</button>
-        <button class="btn btn-secondary kind-btn ${currentKind === 'MONTH' ? 'active' : ''}" data-kind="MONTH" onclick="window.__selectKind(this)">Каждый N мес.</button>
-        <button class="btn btn-secondary kind-btn ${currentKind === 'THIS_WEEK' ? 'active' : ''}" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">Разово на этой</button>
-        <button class="btn btn-secondary kind-btn ${currentKind === 'NEXT_WEEK' ? 'active' : ''}" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">Разово на след.</button>
-        <button class="btn btn-secondary kind-btn ${currentKind === 'MANUAL' ? 'active' : ''}" data-kind="MANUAL" onclick="window.__selectKind(this)">Ручное</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'DAY' ? 'active' : ''}" data-kind="DAY" onclick="window.__selectKind(this)">🔁 Каждый N день</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'WEEK' ? 'active' : ''}" data-kind="WEEK" onclick="window.__selectKind(this)">📆 Каждую N нед.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'MONTH' ? 'active' : ''}" data-kind="MONTH" onclick="window.__selectKind(this)">🗓 Каждый N мес.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'THIS_WEEK' ? 'active' : ''}" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">⚡ Разово на этой</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'NEXT_WEEK' ? 'active' : ''}" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">⏭ Разово на след.</button>
+        <button class="btn btn-secondary kind-btn ${currentKind === 'MANUAL' ? 'active' : ''}" data-kind="MANUAL" onclick="window.__selectKind(this)">🖐 Ручное</button>
       </div>
     </div>`;
 

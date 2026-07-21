@@ -114,8 +114,12 @@ public class BotService {
                 sub.put("id", own.id());
                 sub.put("schedule", humanSchedule(conn, own, task));
                 if (own.nextRunAt() != null) {
-                    sub.put("nextRunAt", ZonedDateTime.ofInstant(own.nextRunAt(),
-                            ZoneId.of(zoneId)).format(DATE_TIME_FMT));
+                    ZonedDateTime zdt = ZonedDateTime.ofInstant(own.nextRunAt(), ZoneId.of(zoneId));
+                    sub.put("nextRunAt", zdt.format(DATE_TIME_FMT));
+                    if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
+                        sub.put("nextRunDate", zdt.toLocalDate().toString());
+                        sub.put("nextRunTime", zdt.toLocalTime().format(TIME_FMT));
+                    }
                 }
                 if (own.dailyTimes() != null) sub.put("dailyTimes", own.dailyTimes());
                 if (own.daysOfWeek() != null) sub.put("daysOfWeek", own.daysOfWeek());

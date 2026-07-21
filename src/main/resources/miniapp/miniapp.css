@@ -532,6 +532,15 @@ select {
 .select-grid .btn {
   font-size: 13px;
   padding: 11px 10px;
+  border: 1px solid transparent;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.select-grid .kind-btn.active {
+  background: rgba(59,130,246,.16);
+  border-color: var(--btn);
+  color: var(--btn);
+  font-weight: 700;
 }
 
 /* ── Calendar ────────────────────────────────────────────────── */

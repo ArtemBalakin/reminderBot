@@ -1,6 +1,7 @@
 package com.example.reminderbot.miniapp;
 
 import com.example.reminderbot.service.BotService;
+import com.example.reminderbot.util.TelegramInitDataValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -20,10 +21,12 @@ import java.util.Map;
 public class ApiHandler implements HttpHandler {
     private final BotService botService;
     private final ObjectMapper mapper;
+    private final String botToken;
 
-    public ApiHandler(BotService botService, ObjectMapper mapper) {
+    public ApiHandler(BotService botService, ObjectMapper mapper, String botToken) {
         this.botService = botService;
         this.mapper = mapper;
+        this.botToken = botToken;
     }
 
     @Override
@@ -38,7 +41,16 @@ public class ApiHandler implements HttpHandler {
 
         String path = exchange.getRequestURI().getPath();
         Map<String, String> q = query(exchange.getRequestURI());
-        long chatId = parseChatId(q.get("chatId"));
+
+        if (!TelegramInitDataValidator.isValid(q.get("initData"), botToken)) {
+            respondJson(exchange, 401, Map.of("error", "Не удалось подтвердить подлинность запроса Telegram"));
+            return;
+        }
+        long chatId = extractChatId(q.get("initData"));
+        if (chatId == 0) {
+            respondJson(exchange, 401, Map.of("error", "Не удалось определить пользователя Telegram"));
+            return;
+        }
 
         try {
             Object result = switch (path) {
@@ -165,11 +177,14 @@ public class ApiHandler implements HttpHandler {
         return result;
     }
 
-    private long parseChatId(String raw) {
-        if (raw == null || raw.isBlank()) return 0;
+    private long extractChatId(String initData) {
         try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
+            Map<String, String> fields = TelegramInitDataValidator.parse(initData);
+            String userJson = fields.get("user");
+            if (userJson == null) return 0;
+            JsonNode node = mapper.readTree(userJson);
+            return node.hasNonNull("id") ? node.get("id").asLong() : 0;
+        } catch (Exception e) {
             return 0;
         }
     }
