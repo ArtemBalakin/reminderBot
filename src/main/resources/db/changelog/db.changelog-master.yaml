@@ -17,3 +17,6 @@ databaseChangeLog:
   - include:
       file: 006-drop-subscription-zone.yaml
       relativeToChangelogFile: true
+  - include:
+      file: 007-teams.yaml
+      relativeToChangelogFile: true

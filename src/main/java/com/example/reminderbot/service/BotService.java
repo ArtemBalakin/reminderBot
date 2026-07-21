@@ -290,7 +290,7 @@ public class BotService {
                 default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
             }
             String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
-            TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote);
+            TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote, null);
             db.tasks().upsert(conn, task);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
@@ -327,9 +327,9 @@ public class BotService {
             if (note != null && note.equals("-")) cleanNote = null; // explicit delete
             else if (note == null) cleanNote = existing.note(); // keep existing
             
-            TaskDefinition updated = new TaskDefinition(existing.id(), cleanTitle, kind, schedule, finalSlots, cleanNote);
+            TaskDefinition updated = new TaskDefinition(existing.id(), cleanTitle, kind, schedule, finalSlots, cleanNote, existing.teamId());
             db.tasks().upsert(conn, updated);
-            
+
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
             result.put("id", updated.id());
@@ -349,7 +349,7 @@ public class BotService {
                 case "title" -> {
                     if (value == null || value.isBlank()) yield null;
                     yield new TaskDefinition(task.id(), value.trim(), task.kind(), task.schedule(),
-                            task.recommendedSlots(), task.note());
+                            task.recommendedSlots(), task.note(), task.teamId());
                 }
                 case "interval" -> {
                     if (task.schedule() == null) yield null;
@@ -357,12 +357,12 @@ public class BotService {
                     try { newInterval = Integer.parseInt(value.trim()); if (newInterval <= 0) throw new NumberFormatException(); }
                     catch (NumberFormatException e) { yield null; }
                     yield new TaskDefinition(task.id(), task.title(), task.kind(),
-                            new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note());
+                            new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(), task.note(), task.teamId());
                 }
                 case "note" -> {
                     String newNote = value != null && !value.trim().equals("-") && !value.isBlank() ? value.trim() : null;
                     yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(),
-                            task.recommendedSlots(), newNote);
+                            task.recommendedSlots(), newNote, task.teamId());
                 }
                 default -> null;
             };
@@ -984,6 +984,46 @@ public class BotService {
             handleEditTaskStart(chatId, text.substring(10).trim());
             return;
         }
+        if (text.equals("/team")) {
+            sendTeamMenu(chatId);
+            return;
+        }
+        if (text.startsWith("/teamcreate ")) {
+            handleTeamCreate(chatId, text.substring(12).trim());
+            return;
+        }
+        if (text.startsWith("/teamjoin ")) {
+            handleTeamJoin(chatId, text.substring(10).trim());
+            return;
+        }
+        if (text.equals("/teamleave")) {
+            handleTeamLeave(chatId);
+            return;
+        }
+        if (text.equals("/teamdelete")) {
+            handleTeamDeleteRequest(chatId);
+            return;
+        }
+        if (text.startsWith("/teamrename ")) {
+            handleTeamRename(chatId, text.substring(12).trim());
+            return;
+        }
+        if (text.equals("/teammembers")) {
+            sendTeamMembers(chatId);
+            return;
+        }
+        if (text.equals("/teamrequests")) {
+            sendTeamRequests(chatId);
+            return;
+        }
+        if (text.equals("/teamtasks")) {
+            sendTeamTasksPage(chatId, 0);
+            return;
+        }
+        if (text.equals("/teamnewtask")) {
+            handleTeamNewTask(chatId);
+            return;
+        }
 
         telegram.sendMessage(chatId, "Не понял. Нажми /tasks, /new или /help.");
     }
@@ -1094,6 +1134,45 @@ public class BotService {
             if (data.startsWith("EDIT_PROP:")) {
                 String[] parts = data.split(":");
                 handleEditTaskProperty(chatId, parts[1], parts[2]);
+                telegram.answerCallbackQuery(callback.id(), null);
+                return;
+            }
+            if (data.startsWith("TEAM_JOIN_APPROVE:")) {
+                handleTeamJoinDecision(chatId, data.substring(19), true);
+                telegram.answerCallbackQuery(callback.id(), "Принято в команду");
+                return;
+            }
+            if (data.startsWith("TEAM_JOIN_REJECT:")) {
+                handleTeamJoinDecision(chatId, data.substring(18), false);
+                telegram.answerCallbackQuery(callback.id(), "Заявка отклонена");
+                return;
+            }
+            if (data.startsWith("TEAM_PROMOTE:")) {
+                handleTeamRoleChange(chatId, Long.parseLong(data.substring(13)), TeamRole.ADMIN);
+                telegram.answerCallbackQuery(callback.id(), "Назначен админом");
+                return;
+            }
+            if (data.startsWith("TEAM_DEMOTE:")) {
+                handleTeamRoleChange(chatId, Long.parseLong(data.substring(12)), TeamRole.MEMBER);
+                telegram.answerCallbackQuery(callback.id(), "Админ снят");
+                return;
+            }
+            if (data.startsWith("TEAM_REMOVE:")) {
+                handleTeamRemoveMember(chatId, Long.parseLong(data.substring(12)));
+                telegram.answerCallbackQuery(callback.id(), "Исключён из команды");
+                return;
+            }
+            if (data.equals("TEAM_DELETE_CONFIRM")) {
+                handleTeamDeleteConfirmed(chatId);
+                telegram.answerCallbackQuery(callback.id(), "Команда удалена");
+                return;
+            }
+            if (data.equals("TEAM_DELETE_CANCEL")) {
+                telegram.answerCallbackQuery(callback.id(), "Отменено");
+                return;
+            }
+            if (data.startsWith("TEAM_TASK_PAGE:")) {
+                sendTeamTasksPage(chatId, Integer.parseInt(data.substring(15)));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
@@ -1277,12 +1356,15 @@ public class BotService {
                 kind,
                 unit == null ? null : new ScheduleRule(unit, interval),
                 slots,
-                note);
+                note,
+                data.get("teamId"));
         db.tasks().upsert(conn, task);
         db.sessions().delete(conn, chatId);
+        String scopeHint = task.teamId() != null
+                ? "\nЭто дело команды — открой /teamtasks."
+                : "\nДальше можешь открыть /tasks и настроить себе напоминание.";
         telegram.sendMessage(chatId,
-                "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(task) +
-                        "\nДальше можешь открыть /tasks и настроить себе напоминание.");
+                "Добавил новое дело:\n\n" + title + "\nПравило: " + frequencyText(task) + scopeHint);
     }
 
     private void startMiniAppSubscription(long chatId, String ref) {
@@ -2430,7 +2512,7 @@ public class BotService {
                         yield null;
                     }
                     yield new TaskDefinition(task.id(), newTitle, task.kind(), task.schedule(), task.recommendedSlots(),
-                            task.note());
+                            task.note(), task.teamId());
                 }
                 case "interval" -> {
                     if (task.schedule() == null) {
@@ -2448,12 +2530,12 @@ public class BotService {
                     }
                     yield new TaskDefinition(task.id(), task.title(), task.kind(),
                             new ScheduleRule(task.schedule().unit(), newInterval), task.recommendedSlots(),
-                            task.note());
+                            task.note(), task.teamId());
                 }
                 case "note" -> {
                     String newNote = value.trim().equals("-") ? null : value.trim();
                     yield new TaskDefinition(task.id(), task.title(), task.kind(), task.schedule(),
-                            task.recommendedSlots(), newNote);
+                            task.recommendedSlots(), newNote, task.teamId());
                 }
                 default -> {
                     telegram.sendMessage(chatId, "Неизвестное свойство.");
@@ -2469,6 +2551,474 @@ public class BotService {
         } catch (java.sql.SQLException e) {
             telegram.sendMessage(chatId, "Ошибка БД");
         }
+    }
+
+    // ── Teams ────────────────────────────────────────────────────────────
+
+    private void sendTeamMenu(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) {
+                TeamJoinRequest pending = db.teamJoinRequests().findByChatId(conn, chatId);
+                if (pending != null) {
+                    Team pendingTeam = db.teams().findById(conn, pending.teamId());
+                    telegram.sendMessage(chatId, "Заявка на вступление в «" +
+                            (pendingTeam != null ? pendingTeam.name() : pending.teamId()) + "» отправлена, жди одобрения от админа.");
+                    return;
+                }
+                telegram.sendMessage(chatId,
+                        "У тебя пока нет команды.\n\n" +
+                                "/teamcreate Название — создать свою команду\n" +
+                                "/teamjoin Название — отправить заявку на вступление в существующую");
+                return;
+            }
+            Team team = db.teams().findById(conn, membership.teamId());
+            if (team == null) {
+                telegram.sendMessage(chatId, "Команда не найдена (возможно, удалена).");
+                return;
+            }
+            long memberCount = db.teamMembers().countByTeamId(conn, team.id());
+            int pendingCount = membership.role().canManageTeam()
+                    ? db.teamJoinRequests().findByTeamId(conn, team.id()).size() : 0;
+            String roleHuman = switch (membership.role()) {
+                case OWNER -> "владелец";
+                case ADMIN -> "админ";
+                case MEMBER -> "участник";
+            };
+            StringBuilder text = new StringBuilder("Команда: " + team.name() +
+                    "\nТвоя роль: " + roleHuman + "\nУчастников: " + memberCount);
+            if (pendingCount > 0) text.append("\nЗаявок на вступление: ").append(pendingCount).append(" — /teamrequests");
+            text.append("\n\n/teamtasks — дела команды\n/teamnewtask — добавить дело команды\n/teammembers — участники");
+            if (membership.role().canManageTeam()) {
+                text.append("\n/teamrename Новое имя — переименовать");
+            }
+            text.append(membership.role() == TeamRole.OWNER
+                    ? "\n/teamdelete — удалить команду"
+                    : "\n/teamleave — покинуть команду");
+            telegram.sendMessage(chatId, text.toString());
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamCreate(long chatId, String name) {
+        if (name.isBlank()) {
+            telegram.sendMessage(chatId, "Укажи название: /teamcreate Моя команда");
+            return;
+        }
+        try (java.sql.Connection conn = db.getConnection()) {
+            if (db.teamMembers().findByChatId(conn, chatId) != null) {
+                telegram.sendMessage(chatId, "Ты уже состоишь в команде. Сначала /teamleave.");
+                return;
+            }
+            if (db.teamJoinRequests().findByChatId(conn, chatId) != null) {
+                telegram.sendMessage(chatId, "У тебя уже есть активная заявка на вступление в команду.");
+                return;
+            }
+            if (db.teams().findByName(conn, name) != null) {
+                telegram.sendMessage(chatId, "Команда с таким названием уже существует.");
+                return;
+            }
+            String id = slugify(name) + "-" + shortId().substring(0, 4);
+            db.teams().insert(conn, new Team(id, name, chatId, true));
+            db.teamMembers().add(conn, id, chatId, TeamRole.OWNER);
+            telegram.sendMessage(chatId, "✅ Команда «" + name + "» создана, ты — владелец.\n\n" +
+                    "Чтобы позвать людей, пусть напишут: /teamjoin " + name);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamJoin(long chatId, String name) {
+        if (name.isBlank()) {
+            telegram.sendMessage(chatId, "Укажи название: /teamjoin Моя команда");
+            return;
+        }
+        try (java.sql.Connection conn = db.getConnection()) {
+            if (db.teamMembers().findByChatId(conn, chatId) != null) {
+                telegram.sendMessage(chatId, "Ты уже состоишь в команде. Сначала /teamleave.");
+                return;
+            }
+            if (db.teamJoinRequests().findByChatId(conn, chatId) != null) {
+                telegram.sendMessage(chatId, "У тебя уже есть активная заявка на вступление.");
+                return;
+            }
+            Team team = db.teams().findByName(conn, name);
+            if (team == null) {
+                telegram.sendMessage(chatId, "Команда «" + name + "» не найдена.");
+                return;
+            }
+            String reqId = shortId();
+            db.teamJoinRequests().create(conn, new TeamJoinRequest(reqId, team.id(), chatId));
+            telegram.sendMessage(chatId, "Заявка на вступление в «" + team.name() + "» отправлена, жди одобрения.");
+
+            String requester = displayUser(conn, chatId);
+            Map<String, Object> kb = TelegramClient.inlineKeyboard(List.of(List.of(
+                    TelegramClient.button("✅ Принять", "TEAM_JOIN_APPROVE:" + reqId),
+                    TelegramClient.button("❌ Отклонить", "TEAM_JOIN_REJECT:" + reqId))));
+            for (TeamMember admin : db.teamMembers().findByTeamId(conn, team.id())) {
+                if (admin.role().canManageTeam()) {
+                    telegram.sendMessage(admin.chatId(), "📨 " + requester + " просится в команду «" + team.name() + "»", kb);
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamJoinDecision(long adminChatId, String requestId, boolean approve) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamJoinRequest request = db.teamJoinRequests().findById(conn, requestId);
+            if (request == null) {
+                telegram.sendMessage(adminChatId, "Заявка уже обработана.");
+                return;
+            }
+            TeamMember adminMembership = db.teamMembers().findByChatId(conn, adminChatId);
+            if (adminMembership == null || !adminMembership.role().canManageTeam()
+                    || !adminMembership.teamId().equals(request.teamId())) {
+                telegram.sendMessage(adminChatId, "У тебя нет прав управлять этой командой.");
+                return;
+            }
+            Team team = db.teams().findById(conn, request.teamId());
+            db.teamJoinRequests().delete(conn, requestId);
+            if (approve) {
+                if (db.teamMembers().findByChatId(conn, request.chatId()) == null) {
+                    db.teamMembers().add(conn, request.teamId(), request.chatId(), TeamRole.MEMBER);
+                    telegram.sendMessage(request.chatId(),
+                            "✅ Тебя приняли в команду «" + (team != null ? team.name() : "") + "». /team");
+                }
+            } else {
+                telegram.sendMessage(request.chatId(),
+                        "Заявка на вступление в «" + (team != null ? team.name() : "") + "» отклонена.");
+            }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(adminChatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamLeave(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) {
+                telegram.sendMessage(chatId, "Ты не состоишь в команде.");
+                return;
+            }
+            if (membership.role() == TeamRole.OWNER) {
+                telegram.sendMessage(chatId, "Ты владелец команды — используй /teamdelete, чтобы её распустить.");
+                return;
+            }
+            db.teamMembers().remove(conn, chatId);
+            telegram.sendMessage(chatId, "Ты покинул команду.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamDeleteRequest(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null || membership.role() != TeamRole.OWNER) {
+                telegram.sendMessage(chatId, "Удалить команду может только владелец.");
+                return;
+            }
+            Team team = db.teams().findById(conn, membership.teamId());
+            Map<String, Object> kb = TelegramClient.inlineKeyboard(List.of(List.of(
+                    TelegramClient.button("🗑 Да, удалить", "TEAM_DELETE_CONFIRM"),
+                    TelegramClient.button("Отмена", "TEAM_DELETE_CANCEL"))));
+            telegram.sendMessage(chatId, "Точно удалить команду «" + (team != null ? team.name() : "") +
+                    "»? Все её дела и участники будут удалены безвозвратно.", kb);
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamDeleteConfirmed(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null || membership.role() != TeamRole.OWNER) {
+                telegram.sendMessage(chatId, "Удалить команду может только владелец.");
+                return;
+            }
+            String teamId = membership.teamId();
+            Team team = db.teams().findById(conn, teamId);
+            List<TeamMember> members = db.teamMembers().findByTeamId(conn, teamId);
+            db.tasks().deleteAllByTeamId(conn, teamId);
+            db.teamJoinRequests().deleteByTeamId(conn, teamId);
+            db.teamMembers().removeAllByTeamId(conn, teamId);
+            db.teams().delete(conn, teamId);
+            for (TeamMember m : members) {
+                if (m.chatId() != chatId) {
+                    telegram.sendMessage(m.chatId(), "Команда «" + (team != null ? team.name() : "") + "» удалена владельцем.");
+                }
+            }
+            telegram.sendMessage(chatId, "Команда удалена.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamRename(long chatId, String newName) {
+        if (newName.isBlank()) {
+            telegram.sendMessage(chatId, "Укажи новое название: /teamrename Новое имя");
+            return;
+        }
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null || !membership.role().canManageTeam()) {
+                telegram.sendMessage(chatId, "Переименовать команду может только владелец или админ.");
+                return;
+            }
+            Team existing = db.teams().findByName(conn, newName);
+            if (existing != null && !existing.id().equals(membership.teamId())) {
+                telegram.sendMessage(chatId, "Команда с таким названием уже существует.");
+                return;
+            }
+            db.teams().rename(conn, membership.teamId(), newName);
+            telegram.sendMessage(chatId, "✅ Команда переименована в «" + newName + "».");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void sendTeamMembers(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember viewer = db.teamMembers().findByChatId(conn, chatId);
+            if (viewer == null) {
+                telegram.sendMessage(chatId, "Ты не состоишь в команде.");
+                return;
+            }
+            List<TeamMember> members = db.teamMembers().findByTeamId(conn, viewer.teamId());
+            StringBuilder text = new StringBuilder("Участники команды:\n\n");
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            for (TeamMember m : members) {
+                String roleHuman = switch (m.role()) {
+                    case OWNER -> "владелец";
+                    case ADMIN -> "админ";
+                    case MEMBER -> "участник";
+                };
+                text.append("• ").append(displayUser(conn, m.chatId())).append(" — ").append(roleHuman).append("\n");
+                if (viewer.role() == TeamRole.OWNER && m.chatId() != chatId) {
+                    List<Map<String, Object>> row = new ArrayList<>();
+                    row.add(m.role() == TeamRole.ADMIN
+                            ? TelegramClient.button("⬇️ Снять админа", "TEAM_DEMOTE:" + m.chatId())
+                            : TelegramClient.button("⬆️ Сделать админом", "TEAM_PROMOTE:" + m.chatId()));
+                    row.add(TelegramClient.button("🚫 Исключить", "TEAM_REMOVE:" + m.chatId()));
+                    rows.add(row);
+                } else if (viewer.role() == TeamRole.ADMIN && m.role() == TeamRole.MEMBER) {
+                    rows.add(List.of(TelegramClient.button("🚫 Исключить", "TEAM_REMOVE:" + m.chatId())));
+                }
+            }
+            telegram.sendMessage(chatId, text.toString().strip(), rows.isEmpty() ? null : TelegramClient.inlineKeyboard(rows));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void sendTeamRequests(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember viewer = db.teamMembers().findByChatId(conn, chatId);
+            if (viewer == null || !viewer.role().canManageTeam()) {
+                telegram.sendMessage(chatId, "Смотреть заявки может только владелец или админ команды.");
+                return;
+            }
+            List<TeamJoinRequest> requests = db.teamJoinRequests().findByTeamId(conn, viewer.teamId());
+            if (requests.isEmpty()) {
+                telegram.sendMessage(chatId, "Нет активных заявок на вступление.");
+                return;
+            }
+            for (TeamJoinRequest r : requests) {
+                Map<String, Object> kb = TelegramClient.inlineKeyboard(List.of(List.of(
+                        TelegramClient.button("✅ Принять", "TEAM_JOIN_APPROVE:" + r.id()),
+                        TelegramClient.button("❌ Отклонить", "TEAM_JOIN_REJECT:" + r.id()))));
+                telegram.sendMessage(chatId, "📨 " + displayUser(conn, r.chatId()) + " просится в команду", kb);
+            }
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamRoleChange(long ownerChatId, long targetChatId, TeamRole newRole) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember owner = db.teamMembers().findByChatId(conn, ownerChatId);
+            if (owner == null || owner.role() != TeamRole.OWNER) {
+                telegram.sendMessage(ownerChatId, "Назначать/снимать админов может только владелец.");
+                return;
+            }
+            TeamMember target = db.teamMembers().findByChatId(conn, targetChatId);
+            if (target == null || !target.teamId().equals(owner.teamId()) || target.role() == TeamRole.OWNER) {
+                telegram.sendMessage(ownerChatId, "Участник не найден в твоей команде.");
+                return;
+            }
+            db.teamMembers().updateRole(conn, targetChatId, newRole);
+            telegram.sendMessage(targetChatId, newRole == TeamRole.ADMIN
+                    ? "Тебя назначили админом команды."
+                    : "С тебя сняли права админа команды.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(ownerChatId, "Ошибка БД");
+        }
+    }
+
+    private void handleTeamRemoveMember(long actingChatId, long targetChatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember actor = db.teamMembers().findByChatId(conn, actingChatId);
+            if (actor == null || !actor.role().canManageTeam()) {
+                telegram.sendMessage(actingChatId, "Исключать участников может только владелец или админ.");
+                return;
+            }
+            TeamMember target = db.teamMembers().findByChatId(conn, targetChatId);
+            if (target == null || !target.teamId().equals(actor.teamId())) {
+                telegram.sendMessage(actingChatId, "Участник не найден в твоей команде.");
+                return;
+            }
+            if (target.role() == TeamRole.OWNER) {
+                telegram.sendMessage(actingChatId, "Нельзя исключить владельца команды.");
+                return;
+            }
+            if (actor.role() == TeamRole.ADMIN && target.role() == TeamRole.ADMIN) {
+                telegram.sendMessage(actingChatId, "Админ не может исключить другого админа — это может только владелец.");
+                return;
+            }
+            db.teamMembers().remove(conn, targetChatId);
+            telegram.sendMessage(targetChatId, "Тебя исключили из команды.");
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(actingChatId, "Ошибка БД");
+        }
+    }
+
+    private void sendTeamTasksPage(long chatId, int page) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) {
+                telegram.sendMessage(chatId, "Ты не состоишь в команде. /team");
+                return;
+            }
+            List<TaskDefinition> tasks = db.tasks().loadAllForTeam(conn, membership.teamId());
+            if (tasks.isEmpty()) {
+                telegram.sendMessage(chatId, "В каталоге команды пока нет дел. /teamnewtask — добавить.");
+                return;
+            }
+            int pageSize = 6;
+            int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+            int safePage = Math.max(0, Math.min(page, totalPages - 1));
+            int from = safePage * pageSize;
+            int to = Math.min(tasks.size(), from + pageSize);
+            StringBuilder sb = new StringBuilder("Дела команды — страница ").append(safePage + 1).append("/").append(totalPages).append("\n\n");
+            List<List<Map<String, Object>>> rows = new ArrayList<>();
+            for (int i = from; i < to; i++) {
+                TaskDefinition t = tasks.get(i);
+                sb.append(i + 1).append(". ").append(t.title()).append("\n   ").append(frequencyText(t)).append("\n\n");
+                rows.add(List.of(TelegramClient.button(trimTitle(t.title()), "TASK_SHOW:" + t.id())));
+            }
+            List<Map<String, Object>> nav = new ArrayList<>();
+            if (safePage > 0) nav.add(TelegramClient.button("◀️", "TEAM_TASK_PAGE:" + (safePage - 1)));
+            if (safePage < totalPages - 1) nav.add(TelegramClient.button("▶️", "TEAM_TASK_PAGE:" + (safePage + 1)));
+            if (!nav.isEmpty()) rows.add(nav);
+            telegram.sendMessage(chatId, sb.toString().strip(), TelegramClient.inlineKeyboard(rows));
+        } catch (java.sql.SQLException e) {
+            telegram.sendMessage(chatId, "Ошибка БД");
+        }
+    }
+
+    // ── MiniApp API: teams ──────────────────────────────────────────────
+
+    public Map<String, Object> apiGetTeam(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) {
+                TeamJoinRequest pending = db.teamJoinRequests().findByChatId(conn, chatId);
+                if (pending != null) {
+                    Team t = db.teams().findById(conn, pending.teamId());
+                    return Map.of("status", "pending", "teamName", t != null ? t.name() : "");
+                }
+                return Map.of("status", "none");
+            }
+            Team team = db.teams().findById(conn, membership.teamId());
+            if (team == null) return Map.of("status", "none");
+            long memberCount = db.teamMembers().countByTeamId(conn, team.id());
+            int pendingCount = membership.role().canManageTeam()
+                    ? db.teamJoinRequests().findByTeamId(conn, team.id()).size() : 0;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("status", "member");
+            m.put("teamName", team.name());
+            m.put("role", membership.role().name());
+            m.put("memberCount", memberCount);
+            m.put("pendingCount", pendingCount);
+            m.put("canManage", membership.role().canManageTeam());
+            m.put("isOwner", membership.role() == TeamRole.OWNER);
+            return m;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamCreate(long chatId, String name) {
+        if (name == null || name.isBlank()) return Map.of("error", "Укажи название");
+        try (java.sql.Connection conn = db.getConnection()) {
+            if (db.teamMembers().findByChatId(conn, chatId) != null) return Map.of("error", "Ты уже состоишь в команде");
+            if (db.teamJoinRequests().findByChatId(conn, chatId) != null) return Map.of("error", "У тебя уже есть активная заявка");
+            if (db.teams().findByName(conn, name.trim()) != null) return Map.of("error", "Команда с таким названием уже существует");
+            String id = slugify(name.trim()) + "-" + shortId().substring(0, 4);
+            db.teams().insert(conn, new Team(id, name.trim(), chatId, true));
+            db.teamMembers().add(conn, id, chatId, TeamRole.OWNER);
+            return Map.of("ok", true, "teamName", name.trim());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamJoin(long chatId, String name) {
+        if (name == null || name.isBlank()) return Map.of("error", "Укажи название");
+        try (java.sql.Connection conn = db.getConnection()) {
+            if (db.teamMembers().findByChatId(conn, chatId) != null) return Map.of("error", "Ты уже состоишь в команде");
+            if (db.teamJoinRequests().findByChatId(conn, chatId) != null) return Map.of("error", "У тебя уже есть активная заявка");
+            Team team = db.teams().findByName(conn, name.trim());
+            if (team == null) return Map.of("error", "Команда не найдена");
+            String reqId = shortId();
+            db.teamJoinRequests().create(conn, new TeamJoinRequest(reqId, team.id(), chatId));
+            String requester = displayUser(conn, chatId);
+            Map<String, Object> kb = TelegramClient.inlineKeyboard(List.of(List.of(
+                    TelegramClient.button("✅ Принять", "TEAM_JOIN_APPROVE:" + reqId),
+                    TelegramClient.button("❌ Отклонить", "TEAM_JOIN_REJECT:" + reqId))));
+            for (TeamMember admin : db.teamMembers().findByTeamId(conn, team.id())) {
+                if (admin.role().canManageTeam()) {
+                    telegram.sendMessage(admin.chatId(), "📨 " + requester + " просится в команду «" + team.name() + "»", kb);
+                }
+            }
+            return Map.of("ok", true, "teamName", team.name());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamLeave(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) return Map.of("error", "Ты не состоишь в команде");
+            if (membership.role() == TeamRole.OWNER) {
+                return Map.of("error", "Владелец не может просто выйти — удали команду через /teamdelete в чате с ботом");
+            }
+            db.teamMembers().remove(conn, chatId);
+            return Map.of("ok", true);
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    private void handleTeamNewTask(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) {
+                telegram.sendMessage(chatId, "Ты не состоишь в команде. /team");
+                return;
+            }
+            Map<String, String> data = new HashMap<>();
+            data.put("teamId", membership.teamId());
+            db.sessions().upsert(conn, chatId, new UserSession(SessionType.NEW_TASK_TITLE, data, null));
+        } catch (java.sql.SQLException e) {
+            System.err.println("DB error " + e.getMessage());
+            return;
+        }
+        telegram.sendMessage(chatId, "Как назвать новое дело команды? Просто пришли название одним сообщением.");
     }
 
     private String taskBoardText() {
@@ -2739,6 +3289,15 @@ public class BotService {
                 /import — загрузить каталог JSON-файлом
                 /importdb — загрузить старый export файл
                 /exportdb — выгрузить данные
+
+                👥 *Команда*
+                /team — статус команды и доступные действия
+                /teamcreate Имя — создать команду (ты станешь владельцем)
+                /teamjoin Имя — отправить заявку на вступление
+                /teamtasks · /teamnewtask — свой каталог дел команды
+                /teammembers — участники и управление ролями (владелец/админ)
+                /teamrequests — заявки на вступление (владелец/админ)
+                /teamrename · /teamdelete · /teamleave
 
                 /cancel — отменить текущий сценарий
                 """;

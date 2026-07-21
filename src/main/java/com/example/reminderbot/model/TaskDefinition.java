@@ -6,6 +6,7 @@ public record TaskDefinition(
         TaskKind kind,
         ScheduleRule schedule,
         Integer recommendedSlots,
-        String note
+        String note,
+        String teamId
 ) {
 }

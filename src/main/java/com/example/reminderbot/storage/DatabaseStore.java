@@ -22,6 +22,9 @@ public class DatabaseStore {
     private final CompletionDao completionDao;
     private final SessionDao sessionDao;
     private final AppMetaDao appMetaDao;
+    private final TeamDao teamDao;
+    private final TeamMemberDao teamMemberDao;
+    private final TeamJoinRequestDao teamJoinRequestDao;
     private final ObjectMapper mapper;
 
     public DatabaseStore(DataSource dataSource) {
@@ -37,6 +40,9 @@ public class DatabaseStore {
         this.completionDao = new CompletionDao();
         this.sessionDao = new SessionDao(mapper);
         this.appMetaDao = new AppMetaDao();
+        this.teamDao = new TeamDao();
+        this.teamMemberDao = new TeamMemberDao();
+        this.teamJoinRequestDao = new TeamJoinRequestDao();
     }
 
     public Connection getConnection() throws SQLException {
@@ -50,6 +56,9 @@ public class DatabaseStore {
     public CompletionDao completions() { return completionDao; }
     public SessionDao sessions() { return sessionDao; }
     public AppMetaDao appMeta() { return appMetaDao; }
+    public TeamDao teams() { return teamDao; }
+    public TeamMemberDao teamMembers() { return teamMemberDao; }
+    public TeamJoinRequestDao teamJoinRequests() { return teamJoinRequestDao; }
     public ObjectMapper mapper() { return mapper; }
 
     public void saveCompletion(CompletionRecord completion) {

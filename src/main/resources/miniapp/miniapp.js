@@ -5,7 +5,18 @@
   'use strict';
 
   const tg = window.Telegram && window.Telegram.WebApp;
-  if (tg) { tg.ready(); tg.expand(); }
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    // Tells the browser which palette native controls (select dropdowns,
+    // checkboxes, scrollbars) should render in — without this, Chrome/WebView
+    // draws the <select> popup with its OS-light default regardless of our
+    // dark CSS, which is why the timezone dropdown showed white-on-white.
+    document.documentElement.style.colorScheme = tg.colorScheme || 'dark';
+    tg.onEvent('themeChanged', () => {
+      document.documentElement.style.colorScheme = tg.colorScheme || 'dark';
+    });
+  }
 
   /* ── State ──────────────────────────────────────────────────── */
   // The server never trusts a client-supplied chatId — every request carries
@@ -593,8 +604,78 @@
       </div>
     </div>`;
 
+    html += await renderTeamSection();
+
     app.innerHTML = html;
   }
+  /* ── Team section (inside Settings) ─────────────────────────── */
+  async function renderTeamSection() {
+    const team = await api('/api/team');
+    let html = `<div class="section-title">Команда</div>`;
+
+    if (team.status === 'member') {
+      const roleHuman = { OWNER: 'владелец', ADMIN: 'админ', MEMBER: 'участник' }[team.role] || team.role;
+      html += `<div class="card">
+        <div class="info-row"><span class="info-label">Название</span><span class="info-value">${esc(team.teamName)}</span></div>
+        <div class="info-row"><span class="info-label">Твоя роль</span><span class="info-value">${roleHuman}</span></div>
+        <div class="info-row"><span class="info-label">Участников</span><span class="info-value">${team.memberCount}</span></div>
+        ${team.canManage && team.pendingCount > 0 ? `<div class="info-row"><span class="info-label">Заявок на вступление</span><span class="info-value">${team.pendingCount}</span></div>` : ''}
+      </div>
+      <div class="card-sub">Дела команды, участники и заявки — через команды в чате с ботом: /teamtasks, /teammembers${team.canManage ? ', /teamrequests' : ''}.</div>`;
+      if (!team.isOwner) {
+        html += `<button class="btn btn-danger" style="margin-top:8px" onclick="window.__teamLeave()">Покинуть команду</button>`;
+      } else {
+        html += `<div class="card-sub" style="margin-top:8px">Переименовать или удалить команду — командами /teamrename и /teamdelete в чате с ботом.</div>`;
+      }
+      return html;
+    }
+
+    if (team.status === 'pending') {
+      html += `<div class="card"><div class="card-sub">Заявка на вступление в «${esc(team.teamName)}» отправлена, жди одобрения от админа.</div></div>`;
+      return html;
+    }
+
+    html += `<div class="card">
+      <div class="input-group">
+        <label>Создать свою команду</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="team-create-name" class="input" placeholder="Название команды" style="flex:1">
+          <button class="btn btn-secondary btn-sm" style="width:auto;flex:none" onclick="window.__teamCreate()">Создать</button>
+        </div>
+      </div>
+      <div class="input-group" style="margin-bottom:0">
+        <label>Вступить в существующую</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="team-join-name" class="input" placeholder="Название команды" style="flex:1">
+          <button class="btn btn-secondary btn-sm" style="width:auto;flex:none" onclick="window.__teamJoin()">Вступить</button>
+        </div>
+      </div>
+    </div>`;
+    return html;
+  }
+  window.__teamCreate = async () => {
+    const name = document.getElementById('team-create-name')?.value?.trim();
+    if (!name) { toast('Введи название'); return; }
+    const r = await api('/api/team/create', { name });
+    if (r.error) { toast(r.error); return; }
+    toast('✅ Команда «' + r.teamName + '» создана');
+    navigate('settings');
+  };
+  window.__teamJoin = async () => {
+    const name = document.getElementById('team-join-name')?.value?.trim();
+    if (!name) { toast('Введи название'); return; }
+    const r = await api('/api/team/join', { name });
+    if (r.error) { toast(r.error); return; }
+    toast('Заявка в «' + r.teamName + '» отправлена');
+    navigate('settings');
+  };
+  window.__teamLeave = async () => {
+    const r = await api('/api/team/leave', {});
+    if (r.error) { toast(r.error); return; }
+    toast('Ты покинул команду');
+    navigate('settings');
+  };
+
   window.__saveTz = async () => {
     const tz = document.getElementById('set-tz')?.value;
     if (!tz) return;

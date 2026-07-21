@@ -1,0 +1,143 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-001-teams
+      author: claude
+      changes:
+        - createTable:
+            tableName: teams
+            columns:
+              - column:
+                  name: id
+                  type: VARCHAR(64)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: owner_chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: 007-002-team-members
+      author: claude
+      changes:
+        - createTable:
+            tableName: team_members
+            columns:
+              - column:
+                  name: team_id
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    references: teams(id)
+                    foreignKeyName: fk_team_members_team
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: role
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: joined_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: ALTER TABLE team_members ADD CONSTRAINT chk_team_members_role CHECK (role IN ('OWNER', 'ADMIN', 'MEMBER'))
+        - createIndex:
+            tableName: team_members
+            indexName: idx_team_members_team
+            columns:
+              - column:
+                  name: team_id
+
+  - changeSet:
+      id: 007-003-team-join-requests
+      author: claude
+      changes:
+        - createTable:
+            tableName: team_join_requests
+            columns:
+              - column:
+                  name: id
+                  type: VARCHAR(40)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: team_id
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    references: teams(id)
+                    foreignKeyName: fk_team_join_requests_team
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: requested_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: team_join_requests
+            indexName: idx_team_join_requests_team
+            columns:
+              - column:
+                  name: team_id
+
+  - changeSet:
+      id: 007-004-tasks-team-id
+      author: claude
+      changes:
+        - addColumn:
+            tableName: tasks
+            columns:
+              - column:
+                  name: team_id
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: true
+                    references: teams(id)
+                    foreignKeyName: fk_tasks_team
+        - createIndex:
+            tableName: tasks
+            indexName: idx_tasks_team
+            columns:
+              - column:
+                  name: team_id
