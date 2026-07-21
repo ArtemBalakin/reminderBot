@@ -143,6 +143,16 @@ public class ApiHandler implements HttpHandler {
                     yield botService.apiTeamJoin(chatId, textNode(body, "name"));
                 }
                 case "/api/team/leave" -> botService.apiTeamLeave(chatId);
+                case "/api/team/tasks" -> botService.apiGetTeamTasksPage(chatId, intParam(q, "page", 0));
+                case "/api/team/tasks/new" -> {
+                    JsonNode body = readJsonBody(exchange);
+                    yield botService.apiTeamCreateTask(chatId,
+                            textNode(body, "title"),
+                            textNode(body, "kindCode"),
+                            body.has("interval") ? body.get("interval").asInt(1) : 1,
+                            body.has("slots") ? body.get("slots").asInt(1) : 1,
+                            textNode(body, "note"));
+                }
                 case "/api/task/edit" -> {
                     JsonNode body = readJsonBody(exchange);
                     yield botService.apiEditTask(

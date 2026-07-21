@@ -87,6 +87,68 @@ public class BotService {
         }
     }
 
+    public Map<String, Object> apiGetTeamTasksPage(long chatId, int page) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) return Map.of("error", "Ты не состоишь в команде");
+            List<TaskDefinition> tasks = db.tasks().loadAllForTeam(conn, membership.teamId());
+            int pageSize = 6;
+            int totalPages = Math.max(1, (tasks.size() + pageSize - 1) / pageSize);
+            int safePage = Math.max(0, Math.min(page, totalPages - 1));
+            int from = safePage * pageSize;
+            int to = Math.min(tasks.size(), from + pageSize);
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (int i = from; i < to; i++) {
+                TaskDefinition t = tasks.get(i);
+                Map<String, Object> m = new LinkedHashMap<>();
+                // Team tasks are referenced by id (not by list position) so a Mini App
+                // click can never resolve against the wrong catalog (personal vs team).
+                m.put("id", t.id());
+                m.put("title", t.title());
+                m.put("kind", t.kind().name());
+                m.put("frequency", frequencyText(t));
+                items.add(m);
+            }
+            return Map.of("tasks", items, "page", safePage, "totalPages", totalPages, "total", tasks.size());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamCreateTask(long chatId, String title, String kindCode,
+            int interval, int slots, String note) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+            if (membership == null) return Map.of("error", "Ты не состоишь в команде");
+            if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
+            String id = slugify(title);
+            if (findTask(conn, id) != null) id = id + "-" + shortId().substring(0, 4);
+            TaskKind kind;
+            ScheduleRule schedule = null;
+            int finalSlots = Math.max(1, slots);
+            switch (kindCode) {
+                case "DAY" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.DAY, Math.max(1, interval)); }
+                case "WEEK" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.WEEK, Math.max(1, interval)); }
+                case "MONTH" -> { kind = TaskKind.RECURRING; schedule = new ScheduleRule(FrequencyUnit.MONTH, Math.max(1, interval)); }
+                case "THIS_WEEK" -> kind = TaskKind.ONE_TIME_THIS_WEEK;
+                case "NEXT_WEEK" -> kind = TaskKind.ONE_TIME_NEXT_WEEK;
+                case "MANUAL" -> { kind = TaskKind.MANUAL; finalSlots = 0; }
+                default -> { return Map.of("error", "Неизвестный тип: " + kindCode); }
+            }
+            String cleanNote = note != null && !note.isBlank() && !note.equals("-") ? note.trim() : null;
+            TaskDefinition task = new TaskDefinition(id, title.trim(), kind, schedule, finalSlots, cleanNote, membership.teamId());
+            db.tasks().upsert(conn, task);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("id", task.id());
+            result.put("title", task.title());
+            result.put("frequency", frequencyText(task));
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
     public Map<String, Object> apiGetTaskCard(long chatId, String ref) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = resolveTask(conn, ref);
