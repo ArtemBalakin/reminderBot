@@ -83,6 +83,7 @@
       case 'stats': pageRender = renderStats(); break;
       case 'calendar': pageRender = renderCalendar(params); break;
       case 'settings': pageRender = renderSettings(); break;
+      case 'teamMembers': pageRender = renderTeamMembers(); break;
       case 'newTask': pageRender = renderNewTask(params); break;
       case 'editTask': pageRender = renderEditTask(params); break;
       case 'subscribe': pageRender = renderSubscribe(params); break;
@@ -642,13 +643,9 @@
     </div>`;
 
     html += `<div class="section-title">Таймзона</div>`;
-    html += `<div class="card">
-      <div class="input-group" style="margin-bottom:0">
-        <select id="set-tz" class="input" onchange="window.__saveTz()">
-          ${tzOptions.map(z => `<option value="${z}" ${z === data.zoneId ? 'selected' : ''}>${z}</option>`).join('')}
-          ${!tzOptions.includes(data.zoneId) ? `<option value="${esc(data.zoneId)}" selected>${esc(data.zoneId)}</option>` : ''}
-        </select>
-      </div>
+    const allTz = tzOptions.includes(data.zoneId) ? tzOptions : [...tzOptions, data.zoneId];
+    html += `<div class="select-grid">
+      ${allTz.map(z => `<button class="btn btn-secondary kind-btn ${z === data.zoneId ? 'active' : ''}" onclick="window.__saveTz('${esc(z)}')">${esc(z)}</button>`).join('')}
     </div>`;
 
     html += `<div class="section-title">Алерты</div>`;
@@ -691,7 +688,8 @@
         <div class="info-row"><span class="info-label">Участников</span><span class="info-value">${team.memberCount}</span></div>
         ${team.canManage && team.pendingCount > 0 ? `<div class="info-row"><span class="info-label">Заявок на вступление</span><span class="info-value">${team.pendingCount}</span></div>` : ''}
       </div>
-      <div class="card-sub" style="margin-top:8px">Дела команды — переключатель наверху вкладки «Дела». Участники и заявки — через команды в чате с ботом: /teammembers${team.canManage ? ', /teamrequests' : ''}.</div>`;
+      <button class="btn btn-secondary" style="margin-top:8px" onclick="window.__nav('teamMembers')">👥 Участники</button>
+      <div class="card-sub" style="margin-top:8px">Дела команды — переключатель наверху вкладки «Дела».${team.canManage ? ' Заявки на вступление — команда /teamrequests в чате с ботом.' : ''}</div>`;
       if (!team.isOwner) {
         html += `<button class="btn btn-danger" style="margin-top:8px" onclick="window.__teamLeave()">Покинуть команду</button>`;
       } else {
@@ -746,11 +744,63 @@
     navigate('settings');
   };
 
-  window.__saveTz = async () => {
-    const tz = document.getElementById('set-tz')?.value;
+  /* ── Team Members (view + manage) ───────────────────────────── */
+  async function renderTeamMembers() {
+    const data = await api('/api/team/members');
+    let html = backRow();
+    if (data.error) { app.innerHTML = html + `<div class="empty"><div class="empty-text">${esc(data.error)}</div></div>`; return; }
+    html += `<div class="page-header">Участники команды</div>`;
+    const roleHuman = { OWNER: 'владелец', ADMIN: 'админ', MEMBER: 'участник' };
+    for (const m of data.members) {
+      html += `<div class="card">
+        <div class="info-row"><span class="info-label">${esc(m.name)}</span><span class="info-value">${roleHuman[m.role] || m.role}</span></div>`;
+      if (data.viewerRole === 'OWNER' && m.role !== 'OWNER') {
+        html += `<div class="btn-row" style="margin-top:8px">
+          ${m.role === 'ADMIN'
+            ? `<button class="btn btn-secondary btn-sm" onclick="window.__teamDemote(${m.chatId})">⬇️ Снять админа</button>`
+            : `<button class="btn btn-secondary btn-sm" onclick="window.__teamPromote(${m.chatId})">⬆️ Сделать админом</button>`}
+          <button class="btn btn-danger btn-sm" onclick="window.__teamRemoveMember(${m.chatId})">🚫 Исключить</button>
+        </div>`;
+      } else if (data.viewerRole === 'ADMIN' && m.role === 'MEMBER') {
+        html += `<div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-danger btn-sm" onclick="window.__teamRemoveMember(${m.chatId})">🚫 Исключить</button>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    app.innerHTML = html;
+  }
+  window.__teamPromote = async (chatId) => {
+    const r = await api('/api/team/members/promote', { chatId });
+    if (r.error) { toast(r.error); return; }
+    toast('Назначен админом');
+    navigate('teamMembers');
+  };
+  window.__teamDemote = async (chatId) => {
+    const r = await api('/api/team/members/demote', { chatId });
+    if (r.error) { toast(r.error); return; }
+    toast('Админ снят');
+    navigate('teamMembers');
+  };
+  window.__teamRemoveMember = (chatId) => {
+    const doRemove = async () => {
+      const r = await api('/api/team/members/remove', { chatId });
+      if (r.error) { toast(r.error); return; }
+      toast('Исключён из команды');
+      navigate('teamMembers');
+    };
+    if (tg && tg.showConfirm) {
+      tg.showConfirm('Исключить участника из команды?', ok => { if (ok) doRemove(); });
+    } else if (confirm('Исключить участника из команды?')) {
+      doRemove();
+    }
+  };
+
+  window.__saveTz = async (tz) => {
     if (!tz) return;
     await api('/api/settings', { zoneId: tz });
     toast('Таймзона: ' + tz);
+    navigate('settings');
   };
   window.__saveAlerts = async () => {
     const on = document.getElementById('set-alerts')?.checked;

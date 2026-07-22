@@ -143,6 +143,19 @@ public class ApiHandler implements HttpHandler {
                     yield botService.apiTeamJoin(chatId, textNode(body, "name"));
                 }
                 case "/api/team/leave" -> botService.apiTeamLeave(chatId);
+                case "/api/team/members" -> botService.apiGetTeamMembers(chatId);
+                case "/api/team/members/promote" -> {
+                    JsonNode body = readJsonBody(exchange);
+                    yield botService.apiTeamPromote(chatId, body.get("chatId").asLong());
+                }
+                case "/api/team/members/demote" -> {
+                    JsonNode body = readJsonBody(exchange);
+                    yield botService.apiTeamDemote(chatId, body.get("chatId").asLong());
+                }
+                case "/api/team/members/remove" -> {
+                    JsonNode body = readJsonBody(exchange);
+                    yield botService.apiTeamRemoveMember(chatId, body.get("chatId").asLong());
+                }
                 case "/api/team/tasks" -> botService.apiGetTeamTasksPage(chatId, intParam(q, "page", 0));
                 case "/api/team/tasks/new" -> {
                     JsonNode body = readJsonBody(exchange);

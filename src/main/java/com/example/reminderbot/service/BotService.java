@@ -3094,6 +3094,74 @@ public class BotService {
         }
     }
 
+    public Map<String, Object> apiGetTeamMembers(long chatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember viewer = db.teamMembers().findByChatId(conn, chatId);
+            if (viewer == null) return Map.of("error", "Ты не состоишь в команде");
+            List<Map<String, Object>> members = new ArrayList<>();
+            for (TeamMember m : db.teamMembers().findByTeamId(conn, viewer.teamId())) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("chatId", m.chatId());
+                item.put("name", displayUser(conn, m.chatId()));
+                item.put("role", m.role().name());
+                members.add(item);
+            }
+            return Map.of("viewerRole", viewer.role().name(), "members", members);
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamPromote(long ownerChatId, long targetChatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember owner = db.teamMembers().findByChatId(conn, ownerChatId);
+            if (owner == null || owner.role() != TeamRole.OWNER) return Map.of("error", "Назначать админов может только владелец");
+            TeamMember target = db.teamMembers().findByChatId(conn, targetChatId);
+            if (target == null || !target.teamId().equals(owner.teamId()) || target.role() == TeamRole.OWNER) {
+                return Map.of("error", "Участник не найден в твоей команде");
+            }
+            db.teamMembers().updateRole(conn, targetChatId, TeamRole.ADMIN);
+            telegram.sendMessage(targetChatId, "Тебя назначили админом команды.");
+            return Map.of("ok", true);
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamDemote(long ownerChatId, long targetChatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember owner = db.teamMembers().findByChatId(conn, ownerChatId);
+            if (owner == null || owner.role() != TeamRole.OWNER) return Map.of("error", "Снимать админов может только владелец");
+            TeamMember target = db.teamMembers().findByChatId(conn, targetChatId);
+            if (target == null || !target.teamId().equals(owner.teamId()) || target.role() != TeamRole.ADMIN) {
+                return Map.of("error", "Участник не найден среди админов твоей команды");
+            }
+            db.teamMembers().updateRole(conn, targetChatId, TeamRole.MEMBER);
+            telegram.sendMessage(targetChatId, "С тебя сняли права админа команды.");
+            return Map.of("ok", true);
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
+    public Map<String, Object> apiTeamRemoveMember(long actingChatId, long targetChatId) {
+        try (java.sql.Connection conn = db.getConnection()) {
+            TeamMember actor = db.teamMembers().findByChatId(conn, actingChatId);
+            if (actor == null || !actor.role().canManageTeam()) return Map.of("error", "Исключать участников может только владелец или админ");
+            TeamMember target = db.teamMembers().findByChatId(conn, targetChatId);
+            if (target == null || !target.teamId().equals(actor.teamId())) return Map.of("error", "Участник не найден в твоей команде");
+            if (target.role() == TeamRole.OWNER) return Map.of("error", "Нельзя исключить владельца команды");
+            if (actor.role() == TeamRole.ADMIN && target.role() == TeamRole.ADMIN) {
+                return Map.of("error", "Админ не может исключить другого админа — это может только владелец");
+            }
+            db.teamMembers().remove(conn, targetChatId);
+            telegram.sendMessage(targetChatId, "Тебя исключили из команды.");
+            return Map.of("ok", true);
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка БД");
+        }
+    }
+
     private void handleTeamNewTask(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
