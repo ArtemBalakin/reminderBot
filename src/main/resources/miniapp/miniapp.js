@@ -83,9 +83,7 @@
       case 'stats': pageRender = renderStats(); break;
       case 'calendar': pageRender = renderCalendar(); break;
       case 'settings': pageRender = renderSettings(); break;
-      case 'teamTasks': pageRender = renderTeamTasks(params); break;
-      case 'teamNewTask': pageRender = renderTeamNewTask(); break;
-      case 'newTask': pageRender = renderNewTask(); break;
+      case 'newTask': pageRender = renderNewTask(params); break;
       case 'editTask': pageRender = renderEditTask(params); break;
       case 'subscribe': pageRender = renderSubscribe(params); break;
       default: pageRender = renderTasks();
@@ -128,109 +126,56 @@
      Pages
      ═══════════════════════════════════════════════════════════════ */
 
-  /* ── Tasks List ─────────────────────────────────────────────── */
+  /* ── Tasks List (personal / team, switchable) ──────────────────── */
   async function renderTasks(params) {
+    const scope = (params && params.scope) || 'personal';
     const page = (params && params.page) || 0;
-    const data = await api('/api/tasks?page=' + page);
+    const team = await api('/api/team');
+    const hasTeam = team && team.status === 'member';
+    const effectiveScope = hasTeam ? scope : 'personal';
+
+    const data = effectiveScope === 'team'
+      ? await api('/api/team/tasks?page=' + page)
+      : await api('/api/tasks?page=' + page);
+
+    let html = '';
+    if (hasTeam) {
+      html += `<div class="scope-toggle">
+        <button class="scope-btn ${effectiveScope === 'personal' ? 'active' : ''}" onclick="window.__tasksScope('personal')">Личные</button>
+        <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__tasksScope('team')">${esc(team.teamName)}</button>
+      </div>`;
+    }
+
     if (data.total === 0) {
-      app.innerHTML = `
-        <div class="page-header">Дела</div>
+      html += `<div class="page-header">${effectiveScope === 'team' ? esc(team.teamName) : 'Дела'}</div>
         <div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Каталог пуст</div></div>
-        <button class="btn btn-primary" onclick="window.__nav('newTask')">＋ Добавить дело</button>`;
+        <button class="btn btn-primary" onclick="window.__nav('newTask', {scope: '${effectiveScope}'})">＋ Добавить дело</button>`;
+      app.innerHTML = html;
       return;
     }
-    let html = `<div class="page-header">Дела <span style="font-size:14px;color:var(--hint);font-weight:400">${data.total} шт.</span></div>`;
+    html += `<div class="page-header">${effectiveScope === 'team' ? esc(team.teamName) : 'Дела'} <span style="font-size:14px;color:var(--hint);font-weight:400">${data.total} шт.</span></div>`;
     for (const t of data.tasks) {
-      html += `<div class="card card-clickable" onclick="window.__showTask('${t.number}')">
+      const ref = effectiveScope === 'team' ? t.id : t.number;
+      html += `<div class="card card-clickable" onclick="window.__showTask('${ref}')">
         <div class="card-title">${esc(t.title)}</div>
         <div class="card-sub">${esc(t.frequency)}</div>
       </div>`;
     }
-    html += paginationHtml(data.page, data.totalPages, 'window.__tasksPage');
-    html += `<button class="btn btn-secondary" style="margin-top:12px" onclick="window.__nav('newTask')">＋ Добавить дело</button>`;
-    html += `<div class="btn-row" style="margin-top:8px">
-      <button class="btn btn-secondary btn-sm" onclick="window.__nav('board')">📋 Доска</button>
-      <button class="btn btn-secondary btn-sm" onclick="window.__nav('stats')">📊 Стата</button>
-    </div>`;
+    html += paginationHtml(data.page, data.totalPages, effectiveScope === 'team' ? 'window.__teamTasksPage' : 'window.__tasksPage');
+    html += `<button class="btn btn-secondary" style="margin-top:12px" onclick="window.__nav('newTask', {scope: '${effectiveScope}'})">＋ Добавить дело</button>`;
+    if (effectiveScope === 'personal') {
+      html += `<div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-secondary btn-sm" onclick="window.__nav('board')">📋 Доска</button>
+        <button class="btn btn-secondary btn-sm" onclick="window.__nav('stats')">📊 Стата</button>
+      </div>`;
+    }
     app.innerHTML = html;
   }
-  window.__tasksPage = p => navigate('tasks', { page: p });
+  window.__tasksPage = p => navigate('tasks', { scope: 'personal', page: p });
+  window.__teamTasksPage = p => navigate('tasks', { scope: 'team', page: p });
+  window.__tasksScope = scope => navigate('tasks', { scope, page: 0 });
   window.__showTask = ref => pushPage('task', { ref });
-  window.__nav = page => { pageStack.push({ page: currentPage }); navigate(page); };
-
-  /* ── Team Tasks List ────────────────────────────────────────── */
-  async function renderTeamTasks(params) {
-    const page = (params && params.page) || 0;
-    const data = await api('/api/team/tasks?page=' + page);
-    let html = backRow();
-    if (data.error) { app.innerHTML = html + `<div class="empty"><div class="empty-text">${esc(data.error)}</div></div>`; return; }
-    if (data.total === 0) {
-      app.innerHTML = html + `
-        <div class="page-header">Дела команды</div>
-        <div class="empty"><div class="empty-icon">📋</div><div class="empty-text">В каталоге команды пока нет дел</div></div>
-        <button class="btn btn-primary" onclick="window.__nav('teamNewTask')">＋ Добавить дело</button>`;
-      return;
-    }
-    html += `<div class="page-header">Дела команды <span style="font-size:14px;color:var(--hint);font-weight:400">${data.total} шт.</span></div>`;
-    for (const t of data.tasks) {
-      html += `<div class="card card-clickable" onclick="window.__showTask('${esc(t.id)}')">
-        <div class="card-title">${esc(t.title)}</div>
-        <div class="card-sub">${esc(t.frequency)}</div>
-      </div>`;
-    }
-    html += paginationHtml(data.page, data.totalPages, 'window.__teamTasksPage');
-    html += `<button class="btn btn-secondary" style="margin-top:12px" onclick="window.__nav('teamNewTask')">＋ Добавить дело команды</button>`;
-    app.innerHTML = html;
-  }
-  window.__teamTasksPage = p => navigate('teamTasks', { page: p });
-
-  /* ── Team New Task ──────────────────────────────────────────── */
-  function renderTeamNewTask() {
-    let html = backRow();
-    html += `<div class="page-header">Новое дело команды</div>`;
-    html += `<div class="input-group">
-      <label>Название</label>
-      <input type="text" id="team-new-title" class="input" placeholder="Как назвать дело?">
-    </div>`;
-    html += `<div class="input-group">
-      <label>Тип</label>
-      <div class="select-grid">
-        <button class="btn btn-secondary kind-btn active" data-kind="DAY" onclick="window.__selectKind(this)">🔁 Каждый N день</button>
-        <button class="btn btn-secondary kind-btn" data-kind="WEEK" onclick="window.__selectKind(this)">📆 Каждую N нед.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MONTH" onclick="window.__selectKind(this)">🗓 Каждый N мес.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">⚡ Разово на этой</button>
-        <button class="btn btn-secondary kind-btn" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">⏭ Разово на след.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MANUAL" onclick="window.__selectKind(this)">🖐 Ручное</button>
-      </div>
-    </div>`;
-    html += `<div id="interval-group" class="input-group">
-      <label>Интервал повторения</label>
-      <input type="number" id="new-interval" class="input" value="1" min="1">
-    </div>`;
-    html += `<div id="slots-group" class="input-group">
-      <label>Сколько раз выполнять?</label>
-      <input type="number" id="new-slots" class="input" value="1" min="1">
-    </div>`;
-    html += `<div class="input-group">
-      <label>Заметка (необязательно)</label>
-      <input type="text" id="team-new-note" class="input" placeholder="Короткая заметка">
-    </div>`;
-    html += `<button class="btn btn-primary" onclick="window.__teamCreateTask()">Создать</button>`;
-    app.innerHTML = html;
-    window.__selectedKind = 'DAY';
-  }
-  window.__teamCreateTask = async () => {
-    const title = document.getElementById('team-new-title')?.value?.trim();
-    if (!title) { toast('Введи название'); return; }
-    const kind = window.__selectedKind || 'DAY';
-    const interval = parseInt(document.getElementById('new-interval')?.value, 10) || 1;
-    const slots = parseInt(document.getElementById('new-slots')?.value, 10) || 1;
-    const note = document.getElementById('team-new-note')?.value?.trim() || null;
-    const r = await api('/api/team/tasks/new', { title, kindCode: kind, interval, slots, note });
-    if (r.error) { toast(r.error); return; }
-    toast('✅ Добавлено: ' + r.title);
-    goBack();
-  };
+  window.__nav = (page, extra) => { pageStack.push({ page: currentPage }); navigate(page, extra); };
 
   /* ── Task Card ──────────────────────────────────────────────── */
   async function renderTaskCard(params) {
@@ -697,8 +642,7 @@
         <div class="info-row"><span class="info-label">Участников</span><span class="info-value">${team.memberCount}</span></div>
         ${team.canManage && team.pendingCount > 0 ? `<div class="info-row"><span class="info-label">Заявок на вступление</span><span class="info-value">${team.pendingCount}</span></div>` : ''}
       </div>
-      <button class="btn btn-secondary" style="margin-top:8px" onclick="window.__nav('teamTasks')">📋 Дела команды</button>
-      <div class="card-sub" style="margin-top:8px">Участники и заявки — через команды в чате с ботом: /teammembers${team.canManage ? ', /teamrequests' : ''}.</div>`;
+      <div class="card-sub" style="margin-top:8px">Дела команды — переключатель наверху вкладки «Дела». Участники и заявки — через команды в чате с ботом: /teammembers${team.canManage ? ', /teamrequests' : ''}.</div>`;
       if (!team.isOwner) {
         html += `<button class="btn btn-danger" style="margin-top:8px" onclick="window.__teamLeave()">Покинуть команду</button>`;
       } else {
@@ -772,9 +716,11 @@
   };
 
   /* ── New Task ───────────────────────────────────────────────── */
-  function renderNewTask() {
+  function renderNewTask(params) {
+    const scope = (params && params.scope) || 'personal';
+    window.__newTaskScope = scope;
     let html = backRow();
-    html += `<div class="page-header">Новое дело</div>`;
+    html += `<div class="page-header">${scope === 'team' ? 'Новое дело команды' : 'Новое дело'}</div>`;
     html += `<div class="input-group">
       <label>Название</label>
       <input type="text" id="new-title" class="input" placeholder="Как назвать дело?">
@@ -828,7 +774,8 @@
     const interval = parseInt(document.getElementById('new-interval')?.value, 10) || 1;
     const slots = parseInt(document.getElementById('new-slots')?.value, 10) || 1;
     const note = document.getElementById('new-note')?.value?.trim() || null;
-    const r = await api('/api/task/new', { title, kindCode: kind, unit: kind, interval, slots, note });
+    const endpoint = window.__newTaskScope === 'team' ? '/api/team/tasks/new' : '/api/task/new';
+    const r = await api(endpoint, { title, kindCode: kind, unit: kind, interval, slots, note });
     if (r.error) { toast(r.error); return; }
     toast('✅ Добавлено: ' + r.title);
     goBack();

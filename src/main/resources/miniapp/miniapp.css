@@ -71,6 +71,36 @@ body {
   transform: scale(1.1);
 }
 
+@media (hover: hover) {
+  .nav-btn:hover {
+    color: var(--text);
+    background: rgba(255,255,255,.05);
+  }
+  .btn-secondary:hover {
+    background: rgba(255,255,255,.13);
+  }
+  .btn-primary:hover {
+    filter: brightness(1.08);
+  }
+  .btn-danger:hover {
+    background: rgba(239,68,68,.22);
+  }
+  .card-clickable:hover {
+    border-color: rgba(255,255,255,.16);
+    transform: translateY(-1px);
+  }
+  .scope-btn:hover:not(.active) {
+    color: var(--text);
+    background: rgba(255,255,255,.06);
+  }
+  .pagination button:hover:not(:disabled) {
+    background: rgba(255,255,255,.14);
+  }
+  .back-row:hover {
+    opacity: .8;
+  }
+}
+
 /* ── Page Container ──────────────────────────────────────────── */
 #app {
   padding: 16px;
@@ -112,6 +142,35 @@ body {
 .card-sub {
   font-size: 13px;
   color: var(--hint);
+}
+
+/* ── Scope toggle (личные / команда) ────────────────────────── */
+.scope-toggle {
+  display: flex;
+  gap: 4px;
+  background: rgba(255,255,255,.06);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  margin-bottom: 14px;
+}
+
+.scope-btn {
+  flex: 1;
+  border: none;
+  background: none;
+  color: var(--hint);
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.scope-btn.active {
+  background: var(--btn);
+  color: var(--btn-text);
 }
 
 /* ── Page Headers ────────────────────────────────────────────── */
