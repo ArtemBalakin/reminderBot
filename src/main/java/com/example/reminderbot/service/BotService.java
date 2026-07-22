@@ -199,27 +199,20 @@ public class BotService {
     public List<Map<String, Object>> apiGetSubscriptions(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             List<Map<String, Object>> result = new ArrayList<>();
-            List<TaskDefinition> allTasks = db.tasks().loadAll(conn);
-            Map<String, TaskDefinition> tasksById = new HashMap<>();
-            for (TaskDefinition task : allTasks) tasksById.put(task.id(), task);
             String zoneId = userZone(conn, chatId);
             for (Subscription sub : db.subscriptions().findAllByChatId(conn, chatId)) {
                 if (!sub.active()) continue;
-                TaskDefinition task = tasksById.get(sub.taskId());
+                // Looked up by id (not the personal-only catalog) so a subscription to a
+                // team task still resolves to its real title instead of the raw task id.
+                TaskDefinition task = findTask(conn, sub.taskId());
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("subscriptionId", sub.id());
                 m.put("taskId", sub.taskId());
                 m.put("taskTitle", task != null ? task.title() : sub.taskId());
                 m.put("schedule", task != null ? humanSchedule(conn, sub, task) : "");
-                // Add task number for miniapp navigation
-                int taskNumber = 1;
-                for (int i = 0; i < allTasks.size(); i++) {
-                    if (allTasks.get(i).id().equals(sub.taskId())) {
-                        taskNumber = i + 1;
-                        break;
-                    }
-                }
-                m.put("taskNumber", taskNumber);
+                // Opaque ref for the Mini App to open the task card with — works for both the
+                // personal catalog and any team catalog, unlike a list-position number would.
+                m.put("taskRef", sub.taskId());
                 if (sub.nextRunAt() != null) {
                     m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
                             ZoneId.of(zoneId)).format(DATE_TIME_FMT));
@@ -478,7 +471,7 @@ public class BotService {
                 JOIN users u ON u.chat_id = s.chat_id
                 LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
                 LEFT JOIN today_completions tc ON tc.subscription_id = s.id
-                WHERE s.active = true AND t.kind != 'MANUAL'
+                WHERE s.active = true AND t.kind != 'MANUAL' AND t.team_id IS NULL
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
                        OR (s.next_run_at IS NOT NULL
@@ -596,7 +589,11 @@ public class BotService {
             for (Subscription sub : subscriptions) {
                 if (sub.active()) taskCounts.merge(sub.taskId(), calcSubSlots(sub), Integer::sum);
             }
+            // Personal catalog only — findAllByIds would happily resolve team task ids too,
+            // which would leak a team's subscriber counts/titles to every bot user.
             Map<String, TaskDefinition> tasksById = db.tasks().findAllByIds(conn, taskCounts.keySet());
+            tasksById.values().removeIf(t -> t.teamId() != null);
+            taskCounts.keySet().retainAll(tasksById.keySet());
             List<Map<String, Object>> items = taskCounts.entrySet().stream()
                     .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
                     .map(e -> {
@@ -606,7 +603,10 @@ public class BotService {
                         m.put("count", e.getValue());
                         return m;
                     }).toList();
-            long totalActive = subscriptions.stream().filter(Subscription::active).count();
+            long totalActive = subscriptions.stream()
+                    .filter(Subscription::active)
+                    .filter(s -> tasksById.containsKey(s.taskId()))
+                    .count();
             return Map.of("items", items, "totalActive", totalActive);
         } catch (java.sql.SQLException e) {
             return Map.of("items", List.of(), "totalActive", 0);
@@ -627,7 +627,9 @@ public class BotService {
             for (Subscription sub : db.subscriptions().loadAll(conn)) {
                 if (!sub.active()) continue;
                 TaskDefinition task = findTask(conn, sub.taskId());
-                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                // team-scoped tasks stay out of the shared calendar — they're not this viewer's business
+                // unless they're a member, and this view has no per-viewer team context yet.
+                if (task == null || task.kind() == TaskKind.MANUAL || task.teamId() != null) continue;
 
                 List<LocalDate> runDates = new ArrayList<>();
                 if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
@@ -2388,6 +2390,11 @@ public class BotService {
                 }
             }
 
+            // Personal catalog only — team tasks/subscriber counts stay inside their own team.
+            Map<String, TaskDefinition> tasksById = db.tasks().findAllByIds(conn, taskCounts.keySet());
+            tasksById.values().removeIf(t -> t.teamId() != null);
+            taskCounts.keySet().retainAll(tasksById.keySet());
+
             if (taskCounts.isEmpty()) {
                 return "Пока нет активных подписок.";
             }
@@ -2398,7 +2405,6 @@ public class BotService {
 
             StringBuilder sb = new StringBuilder("📊 Статистика подписчиков:\n\n");
             int maxCount = sorted.get(0).getValue();
-            Map<String, TaskDefinition> tasksById = db.tasks().findAllByIds(conn, taskCounts.keySet());
 
             for (Map.Entry<String, Integer> entry : sorted) {
                 TaskDefinition task = tasksById.get(entry.getKey());
@@ -3228,7 +3234,7 @@ public class BotService {
                 JOIN users u ON u.chat_id = s.chat_id
                 LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
                 LEFT JOIN today_completions tc ON tc.subscription_id = s.id
-                WHERE s.active = true AND t.kind != 'MANUAL'
+                WHERE s.active = true AND t.kind != 'MANUAL' AND t.team_id IS NULL
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
                        OR (s.next_run_at IS NOT NULL
