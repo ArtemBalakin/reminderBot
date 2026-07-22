@@ -77,11 +77,11 @@
     switch (page) {
       case 'tasks': pageRender = renderTasks(params); break;
       case 'task': pageRender = renderTaskCard(params); break;
-      case 'subs': pageRender = renderSubs(); break;
-      case 'today': pageRender = renderToday(); break;
+      case 'subs': pageRender = renderSubs(params); break;
+      case 'today': pageRender = renderToday(params); break;
       case 'board': pageRender = renderBoard(); break;
       case 'stats': pageRender = renderStats(); break;
-      case 'calendar': pageRender = renderCalendar(); break;
+      case 'calendar': pageRender = renderCalendar(params); break;
       case 'settings': pageRender = renderSettings(); break;
       case 'newTask': pageRender = renderNewTask(params); break;
       case 'editTask': pageRender = renderEditTask(params); break;
@@ -387,15 +387,30 @@
   };
 
   /* ── My Subscriptions ───────────────────────────────────────── */
-  async function renderSubs() {
-    const data = await api('/api/subs');
+  async function renderSubs(params) {
+    const scope = (params && params.scope) || 'personal';
+    const team = await api('/api/team');
+    const hasTeam = team && team.status === 'member';
+    const effectiveScope = hasTeam ? scope : 'personal';
+
+    const all = await api('/api/subs');
+    const data = Array.isArray(all) ? all.filter(s => effectiveScope === 'team' ? s.teamTask : !s.teamTask) : [];
+
+    let html = '';
+    if (hasTeam) {
+      html += `<div class="scope-toggle">
+        <button class="scope-btn ${effectiveScope === 'personal' ? 'active' : ''}" onclick="window.__subsScope('personal')">Личные</button>
+        <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__subsScope('team')">${esc(team.teamName)}</button>
+      </div>`;
+    }
+
     if (!data || data.length === 0) {
-      app.innerHTML = `
-        <div class="page-header">Мои подписки</div>
-        <div class="empty"><div class="empty-icon">🔔</div><div class="empty-text">У тебя пока нет подписок.<br>Открой «Дела» и подпишись.</div></div>`;
+      html += `<div class="page-header">Мои подписки</div>
+        <div class="empty"><div class="empty-icon">🔔</div><div class="empty-text">Тут пока нет подписок.<br>Открой «Дела» и подпишись.</div></div>`;
+      app.innerHTML = html;
       return;
     }
-    let html = `<div class="page-header">Мои подписки <span style="font-size:14px;color:var(--hint);font-weight:400">${data.length}</span></div>`;
+    html += `<div class="page-header">Мои подписки <span style="font-size:14px;color:var(--hint);font-weight:400">${data.length}</span></div>`;
     for (const s of data) {
       html += `<div class="card card-clickable" onclick="window.__showTask('${esc(s.taskRef)}')">
         <div class="card-title">${esc(s.taskTitle)}</div>
@@ -405,13 +420,27 @@
     }
     app.innerHTML = html;
   }
+  window.__subsScope = scope => navigate('subs', { scope });
 
   /* ── Today Board ────────────────────────────────────────────── */
-  async function renderToday() {
-    const data = await api('/api/today');
-    let html = `<div class="page-header">Сегодня</div>`;
-    if (!data.sections || data.sections.length === 0) {
-      html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">На сегодня нет активных дел</div></div>`;
+  async function renderToday(params) {
+    const scope = (params && params.scope) || 'personal';
+    const team = await api('/api/team');
+    const hasTeam = team && team.status === 'member';
+    const effectiveScope = hasTeam ? scope : 'personal';
+
+    const data = await api('/api/today' + (effectiveScope === 'team' ? '?scope=team' : ''));
+
+    let html = '';
+    if (hasTeam) {
+      html += `<div class="scope-toggle">
+        <button class="scope-btn ${effectiveScope === 'personal' ? 'active' : ''}" onclick="window.__todayScope('personal')">Личные</button>
+        <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
+      </div>`;
+    }
+    html += `<div class="page-header">Сегодня</div>`;
+    if (data.error || !data.sections || data.sections.length === 0) {
+      html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
       app.innerHTML = html;
       return;
     }
@@ -427,6 +456,7 @@
     }
     app.innerHTML = html;
   }
+  window.__todayScope = scope => navigate('today', { scope });
 
   /* ── Board ──────────────────────────────────────────────────── */
   async function renderBoard() {
@@ -489,9 +519,16 @@
   let calMonth = new Date().getMonth() + 1;
   let calData = null;
   let calSelected = null;
+  let calScope = 'personal';
+  let calTeam = null;
 
-  async function renderCalendar() {
-    calData = await api('/api/calendar/eager?year=' + calYear + '&month=' + calMonth);
+  async function renderCalendar(params) {
+    const team = await api('/api/team');
+    calTeam = team && team.status === 'member' ? team : null;
+    if (!calTeam) calScope = 'personal';
+    else if (params && params.scope) calScope = params.scope;
+    calData = await api('/api/calendar/eager?year=' + calYear + '&month=' + calMonth +
+      (calScope === 'team' ? '&scope=team' : ''));
     drawCalendar();
   }
 
@@ -502,7 +539,14 @@
     const today = new Date();
     const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
 
-    let html = `<div class="page-header">Календарь</div>`;
+    let html = '';
+    if (calTeam) {
+      html += `<div class="scope-toggle">
+        <button class="scope-btn ${calScope === 'personal' ? 'active' : ''}" onclick="window.__calScope('personal')">Личные</button>
+        <button class="scope-btn ${calScope === 'team' ? 'active' : ''}" onclick="window.__calScope('team')">${esc(calTeam.teamName)}</button>
+      </div>`;
+    }
+    html += `<div class="page-header">Календарь</div>`;
     html += `<div class="calendar-header">`;
     html += `<button class="btn btn-secondary btn-sm" style="width:auto" onclick="window.__calPrev()">◀</button>`;
     html += `<span style="font-size:16px;font-weight:600">${monthNames[calMonth-1]} ${calYear}</span>`;
@@ -572,6 +616,11 @@
   window.__calNext = () => {
     calMonth++;
     if (calMonth > 12) { calMonth = 1; calYear++; }
+    calSelected = null;
+    renderCalendar();
+  };
+  window.__calScope = scope => {
+    calScope = scope;
     calSelected = null;
     renderCalendar();
   };

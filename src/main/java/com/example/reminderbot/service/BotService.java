@@ -213,6 +213,7 @@ public class BotService {
                 // Opaque ref for the Mini App to open the task card with — works for both the
                 // personal catalog and any team catalog, unlike a list-position number would.
                 m.put("taskRef", sub.taskId());
+                m.put("teamTask", task != null && task.teamId() != null);
                 if (sub.nextRunAt() != null) {
                     m.put("nextRunAt", ZonedDateTime.ofInstant(sub.nextRunAt(),
                             ZoneId.of(zoneId)).format(DATE_TIME_FMT));
@@ -434,8 +435,16 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiGetTodayBoard(long chatId) {
+    public Map<String, Object> apiGetTodayBoard(long chatId, boolean teamScope) {
         try (java.sql.Connection conn = db.getConnection()) {
+            // Team scope is always the caller's own membership, resolved server-side —
+            // never a client-supplied team id, or anyone could peek at any team's board.
+            String teamId = null;
+            if (teamScope) {
+                TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+                if (membership == null) return Map.of("error", "Ты не состоишь в команде");
+                teamId = membership.teamId();
+            }
             String sql = """
                 WITH today_prompts AS (
                     SELECT DISTINCT ON (p.subscription_id)
@@ -471,7 +480,9 @@ public class BotService {
                 JOIN users u ON u.chat_id = s.chat_id
                 LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
                 LEFT JOIN today_completions tc ON tc.subscription_id = s.id
-                WHERE s.active = true AND t.kind != 'MANUAL' AND t.team_id IS NULL
+                WHERE s.active = true AND t.kind != 'MANUAL' AND t.team_id """
+                    + (teamScope ? "= ?" : "IS NULL") + """
+
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
                        OR (s.next_run_at IS NOT NULL
@@ -480,8 +491,9 @@ public class BotService {
                 ORDER BY COALESCE(u.username, u.first_name, u.chat_id::text), t.title
                 """;
             Map<Long, Map<String, Object>> sectionMap = new LinkedHashMap<>();
-            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql);
-                 java.sql.ResultSet rs = ps.executeQuery()) {
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
+                if (teamScope) ps.setString(1, teamId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     long uid = rs.getLong("chat_id");
                     String username = rs.getString("username");
@@ -532,6 +544,7 @@ public class BotService {
                     @SuppressWarnings("unchecked")
                     List<Map<String, Object>> tasks = (List<Map<String, Object>>) section.get("tasks");
                     tasks.add(row);
+                }
                 }
             }
             return Map.of("sections", new ArrayList<>(sectionMap.values()));
@@ -613,8 +626,14 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiGetCalendar(int year, int month, String zoneIdStr) {
+    public Map<String, Object> apiGetCalendar(int year, int month, String zoneIdStr, long chatId, boolean teamScope) {
         try (java.sql.Connection conn = db.getConnection()) {
+            String teamId = null;
+            if (teamScope) {
+                TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
+                if (membership == null) return Map.of("error", "Ты не состоишь в команде");
+                teamId = membership.teamId();
+            }
             ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : defaultZone;
             LocalDate start = LocalDate.of(year, month, 1);
             int length = start.lengthOfMonth();
@@ -627,9 +646,10 @@ public class BotService {
             for (Subscription sub : db.subscriptions().loadAll(conn)) {
                 if (!sub.active()) continue;
                 TaskDefinition task = findTask(conn, sub.taskId());
-                // team-scoped tasks stay out of the shared calendar — they're not this viewer's business
-                // unless they're a member, and this view has no per-viewer team context yet.
-                if (task == null || task.kind() == TaskKind.MANUAL || task.teamId() != null) continue;
+                // Personal calendar shows only the personal catalog; team calendar shows only
+                // that one team's own catalog — never both, never someone else's team.
+                if (task == null || task.kind() == TaskKind.MANUAL) continue;
+                if (teamScope ? !teamId.equals(task.teamId()) : task.teamId() != null) continue;
 
                 List<LocalDate> runDates = new ArrayList<>();
                 if (task.kind() == TaskKind.ONE_TIME_THIS_WEEK || task.kind() == TaskKind.ONE_TIME_NEXT_WEEK) {
@@ -692,8 +712,9 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiGetCalendarOverview(int year, int month, String zoneIdStr) {
-        Map<String, Object> full = apiGetCalendar(year, month, zoneIdStr);
+    public Map<String, Object> apiGetCalendarOverview(int year, int month, String zoneIdStr, long chatId, boolean teamScope) {
+        Map<String, Object> full = apiGetCalendar(year, month, zoneIdStr, chatId, teamScope);
+        if (full.containsKey("error")) return full;
         @SuppressWarnings("unchecked")
         Map<String, List<Map<String, Object>>> daysMap = (Map<String, List<Map<String, Object>>>) full.get("days");
         if (daysMap == null) daysMap = new HashMap<>();
@@ -704,9 +725,10 @@ public class BotService {
         return Map.of("days", overviewDays);
     }
 
-    public Map<String, Object> apiGetCalendarDayTasks(String dateStr, String zoneIdStr, int page, int size) {
+    public Map<String, Object> apiGetCalendarDayTasks(String dateStr, String zoneIdStr, int page, int size, long chatId, boolean teamScope) {
         LocalDate date = LocalDate.parse(dateStr);
-        Map<String, Object> full = apiGetCalendar(date.getYear(), date.getMonthValue(), zoneIdStr);
+        Map<String, Object> full = apiGetCalendar(date.getYear(), date.getMonthValue(), zoneIdStr, chatId, teamScope);
+        if (full.containsKey("error")) return full;
         @SuppressWarnings("unchecked")
         Map<String, List<Map<String, Object>>> daysMap = (Map<String, List<Map<String, Object>>>) full.get("days");
         if (daysMap == null) daysMap = new HashMap<>();

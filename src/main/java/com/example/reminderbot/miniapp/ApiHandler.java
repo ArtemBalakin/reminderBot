@@ -57,24 +57,24 @@ public class ApiHandler implements HttpHandler {
                 case "/api/tasks" -> botService.apiGetTasksPage(intParam(q, "page", 0));
                 case "/api/task" -> botService.apiGetTaskCard(chatId, q.getOrDefault("ref", "1"));
                 case "/api/subs" -> botService.apiGetSubscriptions(chatId);
-                case "/api/today" -> botService.apiGetTodayBoard(chatId);
+                case "/api/today" -> botService.apiGetTodayBoard(chatId, "team".equals(q.get("scope")));
                 case "/api/board" -> botService.apiGetBoard();
                 case "/api/stats" -> botService.apiGetStats();
                 case "/api/calendar/eager" -> {
                     int y = intParam(q, "year", java.time.LocalDate.now().getYear());
                     int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
-                    yield botService.apiGetCalendar(y, m, q.get("zoneId"));
+                    yield botService.apiGetCalendar(y, m, q.get("zoneId"), chatId, "team".equals(q.get("scope")));
                 }
                 case "/api/calendar/overview" -> {
                     int y = intParam(q, "year", java.time.LocalDate.now().getYear());
                     int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
-                    yield botService.apiGetCalendarOverview(y, m, q.get("zoneId"));
+                    yield botService.apiGetCalendarOverview(y, m, q.get("zoneId"), chatId, "team".equals(q.get("scope")));
                 }
                 case "/api/calendar/day" -> {
                     String date = q.get("date");
                     int page = intParam(q, "page", 0);
                     int size = intParam(q, "size", 20);
-                    yield botService.apiGetCalendarDayTasks(date, q.get("zoneId"), page, size);
+                    yield botService.apiGetCalendarDayTasks(date, q.get("zoneId"), page, size, chatId, "team".equals(q.get("scope")));
                 }
                 case "/api/settings" -> {
                     if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
