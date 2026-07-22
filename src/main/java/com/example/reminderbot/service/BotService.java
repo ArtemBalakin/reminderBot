@@ -1224,27 +1224,27 @@ public class BotService {
                 return;
             }
             if (data.startsWith("TEAM_JOIN_APPROVE:")) {
-                handleTeamJoinDecision(chatId, data.substring(19), true);
+                handleTeamJoinDecision(chatId, data.substring("TEAM_JOIN_APPROVE:".length()), true);
                 telegram.answerCallbackQuery(callback.id(), "Принято в команду");
                 return;
             }
             if (data.startsWith("TEAM_JOIN_REJECT:")) {
-                handleTeamJoinDecision(chatId, data.substring(18), false);
+                handleTeamJoinDecision(chatId, data.substring("TEAM_JOIN_REJECT:".length()), false);
                 telegram.answerCallbackQuery(callback.id(), "Заявка отклонена");
                 return;
             }
             if (data.startsWith("TEAM_PROMOTE:")) {
-                handleTeamRoleChange(chatId, Long.parseLong(data.substring(13)), TeamRole.ADMIN);
+                handleTeamRoleChange(chatId, Long.parseLong(data.substring("TEAM_PROMOTE:".length())), TeamRole.ADMIN);
                 telegram.answerCallbackQuery(callback.id(), "Назначен админом");
                 return;
             }
             if (data.startsWith("TEAM_DEMOTE:")) {
-                handleTeamRoleChange(chatId, Long.parseLong(data.substring(12)), TeamRole.MEMBER);
+                handleTeamRoleChange(chatId, Long.parseLong(data.substring("TEAM_DEMOTE:".length())), TeamRole.MEMBER);
                 telegram.answerCallbackQuery(callback.id(), "Админ снят");
                 return;
             }
             if (data.startsWith("TEAM_REMOVE:")) {
-                handleTeamRemoveMember(chatId, Long.parseLong(data.substring(12)));
+                handleTeamRemoveMember(chatId, Long.parseLong(data.substring("TEAM_REMOVE:".length())));
                 telegram.answerCallbackQuery(callback.id(), "Исключён из команды");
                 return;
             }
@@ -1258,7 +1258,7 @@ public class BotService {
                 return;
             }
             if (data.startsWith("TEAM_TASK_PAGE:")) {
-                sendTeamTasksPage(chatId, Integer.parseInt(data.substring(15)));
+                sendTeamTasksPage(chatId, Integer.parseInt(data.substring("TEAM_TASK_PAGE:".length())));
                 telegram.answerCallbackQuery(callback.id(), null);
                 return;
             }
