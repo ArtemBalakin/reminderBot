@@ -453,6 +453,9 @@
     const doneCount = todayTasks.filter(t => t.done).length;
     html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
     html += `<div class="page-header">Сегодня</div>`;
+    if (!data.error && todayTasks.length > 0 && doneCount === todayTasks.length) {
+      html += `<div class="cat-celebrate"><span class="cat" aria-hidden="true">😺🏆</span><h2>Отлично!</h2><p>Все дела на сегодня выполнены. Кот тобой гордится! ✨</p></div>`;
+    }
     if (data.error || !data.sections || data.sections.length === 0) {
       html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
       app.innerHTML = html;
