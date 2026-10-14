@@ -457,6 +457,7 @@
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
+    html += weekStrip();
     html += `<div class="cat-progress"><span>✨ <strong>${doneCount} из ${todayTasks.length}</strong> дел выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 0}%</span></div>
       <div class="home-heading"><h2>Сегодня</h2><span class="card-sub">${esc(dateLabel)}</span></div>`;
     if (data.error) {
@@ -468,11 +469,11 @@
     } else {
       html += `<div class="home-list">`;
       for (const t of todayTasks) {
-        html += `<button class="home-task" onclick="window.__showTask('${esc(t.taskId || '')}')">
+        html += `<div class="home-task">
           <span class="home-task__icon" aria-hidden="true">${taskEmoji(t.taskTitle)}</span>
-          <span class="home-task__details"><span class="home-task__title">${esc(t.taskTitle)}</span>
+          <button class="home-task__details task-open" onclick="window.__showTask('${esc(t.taskId || '')}')"><span class="home-task__title">${esc(t.taskTitle)}</span>
             <span class="home-task__meta">${esc(t.status)}${effectiveScope === 'team' ? ' · '+esc(t.user) : ''}</span></span>
-          <span class="home-task__check ${t.done ? 'done' : ''}">${t.done ? '✓' : ''}</span></button>`;
+          </button><button class="home-task__check ${t.done ? 'done' : ''}" ${t.done || !t.mine ? 'disabled' : `onclick="window.__completeToday(\'${esc(t.taskId)}\')"`} aria-label="Отметить выполненным">${t.done ? '✓' : ''}</button></div>`;
       }
       html += `</div>`;
       if (doneCount === todayTasks.length) html += `<div class="cat-celebrate" style="margin-top:16px">
@@ -481,6 +482,20 @@
     }
     app.innerHTML = html;
   }
+  function weekStrip() {
+    const now = new Date(); const fmt = new Intl.DateTimeFormat('ru-RU',{weekday:'short'});
+    let html = '<div class="week-strip">';
+    for (let i=-2;i<=4;i++) {
+      const d=new Date(now); d.setDate(d.getDate()+i);
+      html += '<button class="week-day '+(i===0?'active':'')+'" onclick="window.__nav(\'calendar\')"><span>'+fmt.format(d)+'</span><strong>'+d.getDate()+'</strong></button>';
+    }
+    return html+'</div>';
+  }
+  window.__completeToday = async taskId => {
+    const result = await api('/api/today/complete',{taskId});
+    if(result.error){toast(result.error);return;}
+    toast('Отлично! Дело выполнено 🐾');navigate('today');
+  };
   function taskEmoji(title) {
     const t = (title || '').toLowerCase();
     if (/кот|кошк|корм/.test(t)) return '🐱';
@@ -669,7 +684,7 @@
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
     const theme = localStorage.getItem('reminder-theme') || 'auto';
-    let html = `<div class="page-header">Настройки</div>`;
+    let html = `<div class="page-header">Мой профиль</div><div class="profile-welcome"><img src="/static/cat-celebrate.svg" alt="Кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Хорошего дня!'}</small></div></div><div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Мои напоминания</button><button onclick="window.__nav('stats')">📊 Статистика</button><button onclick="window.__nav('teamMembers')">👥 Команда</button></div>`;
     html += `<div class="section-title">Оформление</div><div class="cat-theme-picker">
       <button class="${theme === 'light' ? 'selected' : ''}" onclick="window.__setTheme('light')">☀️ Светлая</button>
       <button class="${theme === 'dark' ? 'selected' : ''}" onclick="window.__setTheme('dark')">🌙 Тёмная</button>
@@ -859,7 +874,7 @@
     const scope = (params && params.scope) || 'personal';
     window.__newTaskScope = scope;
     let html = backRow();
-    html += `<div class="page-header">${scope === 'team' ? 'Новое дело команды' : 'Новое дело'}</div>`;
+    html += `<div class="page-header">Новая задача</div><div class="form-intro">Добавим ещё одно полезное дело в твой день 🌿</div>`;
     html += `<div class="input-group">
       <label>Название</label>
       <input type="text" id="new-title" class="input" placeholder="Как назвать дело?">
