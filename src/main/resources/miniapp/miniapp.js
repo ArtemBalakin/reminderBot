@@ -448,7 +448,7 @@
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
-    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><img class="cat-hero__cat" src="/static/cat-home.svg" alt="Рыжий кот отдыхает у окна"></div>`;
+    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><img class="cat-hero__cat cat-light" src="/static/cat-home.svg" alt="Рыжий кот отдыхает у окна"><img class="cat-hero__cat cat-night" src="/static/cat-home-night.svg" alt="Кот отдыхает при лунном свете"></div>`;
     const todayTasks = (data.sections || []).flatMap(s => s.tasks || []);
     const doneCount = todayTasks.filter(t => t.done).length;
     html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
