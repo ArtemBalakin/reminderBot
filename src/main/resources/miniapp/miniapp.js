@@ -92,6 +92,7 @@
       case 'stats': pageRender = renderStats(); break;
       case 'calendar': pageRender = renderCalendar(params); break;
       case 'settings': pageRender = renderSettings(); break;
+      case 'success': pageRender = renderSuccess(); break;
       case 'teamMembers': pageRender = renderTeamMembers(); break;
       case 'newTask': pageRender = renderNewTask(params); break;
       case 'editTask': pageRender = renderEditTask(params); break;
@@ -494,8 +495,19 @@
   window.__completeToday = async taskId => {
     const result = await api('/api/today/complete',{taskId});
     if(result.error){toast(result.error);return;}
-    toast('Отлично! Дело выполнено 🐾');navigate('today');
+    navigate('success');
   };
+  function renderSuccess() {
+    app.innerHTML = `<div class="success-screen">
+      <div class="success-art"><img src="/static/cat-celebrate.svg" alt="Счастливый рыжий кот с кубком"></div>
+      <h1>Отлично!</h1>
+      <p>Задача выполнена! 🎉</p>
+      <div class="success-quote">Маленькие шаги ведут к большим результатам ♥</div>
+      <button class="btn btn-primary" onclick="window.__nav('today')">Продолжить</button>
+      <button class="btn btn-secondary" onclick="window.__nav('tasks')">Посмотреть все дела</button>
+    </div>`;
+  }
+
   function taskEmoji(title) {
     const t = (title || '').toLowerCase();
     if (/кот|кошк|корм/.test(t)) return '🐱';
