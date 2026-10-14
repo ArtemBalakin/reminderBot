@@ -121,6 +121,7 @@ public class BotService {
             TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
             if (membership == null) return Map.of("error", "Ты не состоишь в команде");
             if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
+            if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
             String id = slugify(title);
             if (findTask(conn, id) != null) id = id + "-" + shortId().substring(0, 4);
             TaskKind kind;
@@ -152,7 +153,7 @@ public class BotService {
     public Map<String, Object> apiGetTaskCard(long chatId, String ref) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = resolveTask(conn, ref);
-            if (task == null) return Map.of("error", "Не нашёл дело: " + ref);
+            if (task == null || !canAccessTask(conn, chatId, task)) return Map.of("error", "Дело недоступно");
             long subscribers = db.subscriptions().countActiveByTaskId(conn, task.id());
             Subscription own = findUserSubscription(conn, chatId, task.id());
             Map<String, Object> result = new LinkedHashMap<>();
@@ -265,7 +266,7 @@ public class BotService {
             List<String> times, String dateStr, String timeStr, List<String> daysOfWeek, List<Integer> daysOfMonth) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = resolveTask(conn, taskRef);
-            if (task == null) return Map.of("error", "Дело не найдено");
+            if (task == null || !canAccessTask(conn, chatId, task)) return Map.of("error", "Дело недоступно");
             if (task.kind() == TaskKind.MANUAL) return Map.of("error", "Ручное дело без расписания");
             UserProfile profile = getProfile(conn, chatId);
             Subscription updated;
@@ -316,7 +317,7 @@ public class BotService {
     public Map<String, Object> apiUnsubscribe(long chatId, String taskRef) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = resolveTask(conn, taskRef);
-            if (task == null) return Map.of("error", "Дело не найдено");
+            if (task == null || !canAccessTask(conn, chatId, task)) return Map.of("error", "Дело недоступно");
             Subscription sub = findUserSubscription(conn, chatId, task.id());
             if (sub != null) {
                 db.subscriptions().delete(conn, sub.id());
@@ -328,7 +329,7 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiCreateTask(String title, String kindCode, String unit,
+    public Map<String, Object> apiCreateTask(long chatId, String title, String kindCode, String unit,
             int interval, int slots, String note) {
         try (java.sql.Connection conn = db.getConnection()) {
             String id = slugify(title);
@@ -359,11 +360,11 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiUpdateTask(String taskId, String title, String kindCode,
+    public Map<String, Object> apiUpdateTask(long chatId, String taskId, String title, String kindCode,
             int interval, int slots, String note) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition existing = findTask(conn, taskId);
-            if (existing == null) return Map.of("error", "Дело не найдено");
+            if (existing == null || !canEditTask(conn, chatId, existing)) return Map.of("error", "Нет доступа к редактированию дела");
             
             TaskKind kind;
             ScheduleRule schedule = null;
@@ -397,10 +398,10 @@ public class BotService {
         }
     }
 
-    public Map<String, Object> apiEditTask(String taskId, String property, String value) {
+    public Map<String, Object> apiEditTask(long chatId, String taskId, String property, String value) {
         try (java.sql.Connection conn = db.getConnection()) {
             TaskDefinition task = findTask(conn, taskId);
-            if (task == null) return Map.of("error", "Дело не найдено");
+            if (task == null || !canEditTask(conn, chatId, task)) return Map.of("error", "Нет доступа к редактированию дела");
             TaskDefinition updated = switch (property) {
                 case "title" -> {
                     if (value == null || value.isBlank()) yield null;
@@ -1729,6 +1730,10 @@ public class BotService {
     private void handlePromptDone(String callbackId, String promptId, long chatId, Integer messageId) {
         try (java.sql.Connection conn = db.getConnection()) {
             ActivePrompt prompt = findPrompt(conn, promptId);
+            if (prompt != null && prompt.chatId() != chatId) {
+                telegram.answerCallbackQuery(callbackId, "Нет доступа к напоминанию");
+                return;
+            }
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
@@ -1976,6 +1981,19 @@ public class BotService {
         return db.prompts().findById(conn, id);
     }
 
+    private boolean canAccessTask(java.sql.Connection conn, long chatId, TaskDefinition task) throws java.sql.SQLException {
+        if (task.teamId() == null) return true;
+        TeamMember member = db.teamMembers().findByChatId(conn, chatId);
+        return member != null && task.teamId().equals(member.teamId());
+    }
+
+    private boolean canEditTask(java.sql.Connection conn, long chatId, TaskDefinition task) throws java.sql.SQLException {
+        if (!canAccessTask(conn, chatId, task)) return false;
+        if (task.teamId() == null) return true; // Existing shared catalog policy.
+        TeamMember member = db.teamMembers().findByChatId(conn, chatId);
+        return member != null && member.role().canManageTeam();
+    }
+
     private TaskDefinition findTask(java.sql.Connection conn, String id) throws java.sql.SQLException {
         return db.tasks().findById(conn, id);
     }
@@ -2131,10 +2149,16 @@ public class BotService {
                     "Плановое время: " + when + "\n\n" +
                     details + "\n\n" +
                     "Чтобы не получать такие уведомления: /alerts off";
-            for (UserProfile profile : db.users().loadAll(conn).values()) {
-                if (!profile.alertsEnabled())
-                    continue;
-                telegram.sendMessage(profile.chatId(), text, alertsKeyboard());
+            TeamMember senderTeam = db.teamMembers().findByChatId(conn, prompt.chatId());
+            if (senderTeam != null && task.teamId() != null && task.teamId().equals(senderTeam.teamId())) {
+                for (TeamMember member : db.teamMembers().findByTeamId(conn, senderTeam.teamId())) {
+                    UserProfile recipient = db.users().findById(conn, member.chatId());
+                    if (recipient != null && recipient.alertsEnabled())
+                        telegram.sendMessage(recipient.chatId(), text, alertsKeyboard());
+                }
+            } else if (task.teamId() == null) {
+                // A personal task must not expose its owner to unrelated Telegram users.
+                telegram.sendMessage(prompt.chatId(), text, alertsKeyboard());
             }
         } catch (Exception e) {
             System.err.println("DB error: " + e.getMessage());
@@ -2302,7 +2326,7 @@ public class BotService {
 
     private void handleFastForward(long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
-            List<Subscription> subs = db.subscriptions().loadAll(conn);
+            List<Subscription> subs = db.subscriptions().findAllByChatId(conn, chatId);
             int count = 0;
             int errors = 0;
             Instant now = Instant.now();
@@ -2334,9 +2358,9 @@ public class BotService {
                     errors++;
                 }
             }
-            db.prompts().deleteAll(conn);
+            db.prompts().deleteByChatId(conn, chatId);
             conn.commit();
-            String msg = "Все долги списаны! Обновлено " + count + " подписок.";
+            String msg = "Твои долги списаны! Обновлено " + count + " подписок.";
             if (errors > 0) msg += " (" + errors + " с ошибками, сдвинуты на завтра)";
             telegram.sendMessage(chatId, msg);
         } catch (java.sql.SQLException e) {
