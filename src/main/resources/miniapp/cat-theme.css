@@ -20,6 +20,9 @@ body {font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,sans-serif
 .cat-hero{min-height:208px;position:relative;overflow:hidden;border-radius:25px;margin-bottom:16px;background:linear-gradient(155deg,#ffdfa8,#f6bd83 53%,#e5a772);display:flex;align-items:flex-end;padding:18px 18px 18px 20px;box-shadow:0 10px 28px rgba(151,96,35,.18)}
 .cat-hero:before{content:"";position:absolute;inset:13px 20px 45px auto;width:134px;border-radius:85px 85px 15px 15px;background:linear-gradient(120deg,#fff7de,#fff1b7);border:8px solid #c68b57;box-shadow:inset 0 0 35px #fff}
 .cat-hero:after{content:"";position:absolute;width:180px;height:60px;bottom:-40px;right:-20px;background:#b37c4b;border-radius:50%}
+.cat-night{display:none}
+:root[data-theme="dark"] .cat-light{display:none}
+:root[data-theme="dark"] .cat-night{display:block}
 .cat-hero__copy{position:relative;z-index:2;max-width:62%;color:#56311d}
 .cat-hero__title{font-size:27px;font-weight:900;letter-spacing:-.055em}
 .cat-hero__sub{font-size:12px;line-height:1.55;margin-top:8px;font-weight:600;color:#815536}
