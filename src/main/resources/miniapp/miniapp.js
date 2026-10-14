@@ -120,7 +120,7 @@
       const prev = pageStack.pop();
       navigate(prev.page, prev.params);
     } else {
-      navigate('tasks');
+      navigate('today');
     }
   }
 
@@ -163,12 +163,13 @@
       app.innerHTML = html;
       return;
     }
-    html += `<div class="page-header">${effectiveScope === 'team' ? esc(team.teamName) : 'Дела'} <span style="font-size:14px;color:var(--hint);font-weight:400">${data.total} шт.</span></div>`;
+    html += `<div class="page-header">${effectiveScope === 'team' ? esc(team.teamName) : 'Все дела'} <span style="font-size:14px;color:var(--hint);font-weight:400">${data.total} шт.</span></div>`;
+    html += `<input class="catalog-search" id="catalog-filter" type="search" placeholder="⌕  Найти дело..." oninput="window.__filterCatalog(this.value)" aria-label="Поиск по списку дел">`;
     for (const t of data.tasks) {
       const ref = effectiveScope === 'team' ? t.id : t.number;
-      html += `<div class="card card-clickable" onclick="window.__showTask('${ref}')">
-        <div class="card-title">${esc(t.title)}</div>
-        <div class="card-sub">${esc(t.frequency)}</div>
+      html += `<div class="card card-clickable catalog-card" data-catalog-task="${esc(t.title.toLowerCase())}" onclick="window.__showTask('${esc(ref)}')">
+        <span class="task-list-icon" aria-hidden="true">${taskEmoji(t.title)}</span><div style="flex:1;min-width:0"><div class="card-title">${esc(t.title)}</div>
+        <div class="card-sub">${esc(t.frequency)}</div></div>
       </div>`;
     }
     html += paginationHtml(data.page, data.totalPages, effectiveScope === 'team' ? 'window.__teamTasksPage' : 'window.__tasksPage');
@@ -181,6 +182,7 @@
     }
     app.innerHTML = html;
   }
+  window.__filterCatalog = q => { const text = q.toLowerCase(); document.querySelectorAll('[data-catalog-task]').forEach(el => { el.hidden = !el.dataset.catalogTask.includes(text); }); };
   window.__tasksPage = p => navigate('tasks', { scope: 'personal', page: p });
   window.__teamTasksPage = p => navigate('tasks', { scope: 'team', page: p });
   window.__tasksScope = scope => navigate('tasks', { scope, page: 0 });
@@ -438,40 +440,56 @@
     const team = await api('/api/team');
     const hasTeam = team && team.status === 'member';
     const effectiveScope = hasTeam ? scope : 'personal';
-
     const data = await api('/api/today' + (effectiveScope === 'team' ? '?scope=team' : ''));
-
-    let html = '';
+    const sections = Array.isArray(data.sections) ? data.sections : [];
+    const todayTasks = sections.flatMap(section => (section.tasks || []).map(t => ({ ...t, user: section.user })));
+    const doneCount = todayTasks.filter(t => t.done).length;
+    const dateLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', weekday: 'long' }).format(new Date());
+    let html = `<div class="cat-hero">
+      <img class="cat-hero__cat cat-light" src="/static/cat-home.svg" alt="Рыжий кот на зелёной подушке у солнечного окна">
+      <img class="cat-hero__cat cat-night" src="/static/cat-home-night.svg" alt="Кот спит в уютной комнате ночью">
+      <div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div>
+        <div class="cat-hero__sub">Здесь живут твои планы и маленькие победы</div></div>
+    </div>`;
     if (hasTeam) {
       html += `<div class="scope-toggle">
         <button class="scope-btn ${effectiveScope === 'personal' ? 'active' : ''}" onclick="window.__todayScope('personal')">Личные</button>
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
-    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><img class="cat-hero__cat cat-light" src="/static/cat-home.svg" alt="Рыжий кот отдыхает у окна"><img class="cat-hero__cat cat-night" src="/static/cat-home-night.svg" alt="Кот отдыхает при лунном свете"></div>`;
-    const todayTasks = (data.sections || []).flatMap(s => s.tasks || []);
-    const doneCount = todayTasks.filter(t => t.done).length;
-    html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
-    html += `<div class="page-header">Сегодня</div>`;
-    if (!data.error && todayTasks.length > 0 && doneCount === todayTasks.length) {
-      html += `<div class="cat-celebrate"><img class="cat" src="/static/cat-celebrate.svg" alt="Радостный кот с кубком"><h2>Отлично!</h2><p>Все дела на сегодня выполнены. Кот тобой гордится! ✨</p></div>`;
-    }
-    if (data.error || !data.sections || data.sections.length === 0) {
-      html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
-      app.innerHTML = html;
-      return;
-    }
-    for (const section of data.sections) {
-      html += `<div class="section-title">${esc(section.user)}</div>`;
-      for (const t of section.tasks) {
-        const chipClass = t.done ? 'chip-done' : 'chip-waiting';
-        html += `<div class="card">
-          <div class="card-title">${esc(t.taskTitle)}</div>
-          <div class="chip-row"><span class="chip ${chipClass}">${esc(t.status)}</span></div>
-        </div>`;
+    html += `<div class="cat-progress"><span>✨ <strong>${doneCount} из ${todayTasks.length}</strong> дел выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 0}%</span></div>
+      <div class="home-heading"><h2>Сегодня</h2><span class="card-sub">${esc(dateLabel)}</span></div>`;
+    if (data.error) {
+      html += `<div class="empty-home"><h3>Не получилось загрузить дела</h3><p>${esc(data.error)}</p></div>`;
+    } else if (!todayTasks.length) {
+      html += `<div class="empty-home"><div class="empty-home__icon">🌿</div>
+        <h3>Сегодня можно отдохнуть</h3><p>Пока нет запланированных дел. Добавь первое — и кот поможет ничего не забыть.</p>
+        <button class="btn btn-primary" onclick="window.__nav('newTask')">＋ Добавить дело</button></div>`;
+    } else {
+      html += `<div class="home-list">`;
+      for (const t of todayTasks) {
+        html += `<button class="home-task" onclick="window.__showTask('${esc(t.taskId || '')}')">
+          <span class="home-task__icon" aria-hidden="true">${taskEmoji(t.taskTitle)}</span>
+          <span class="home-task__details"><span class="home-task__title">${esc(t.taskTitle)}</span>
+            <span class="home-task__meta">${esc(t.status)}${effectiveScope === 'team' ? ' · '+esc(t.user) : ''}</span></span>
+          <span class="home-task__check ${t.done ? 'done' : ''}">${t.done ? '✓' : ''}</span></button>`;
       }
+      html += `</div>`;
+      if (doneCount === todayTasks.length) html += `<div class="cat-celebrate" style="margin-top:16px">
+        <img class="cat" src="/static/cat-celebrate.svg" alt="Радостный рыжий кот с кубком">
+        <h2>Отлично!</h2><p>Все дела на сегодня выполнены ✨</p></div>`;
     }
     app.innerHTML = html;
+  }
+  function taskEmoji(title) {
+    const t = (title || '').toLowerCase();
+    if (/кот|кошк|корм/.test(t)) return '🐱';
+    if (/цвет|растен|полив/.test(t)) return '🪴';
+    if (/мусор|уборк|чист|пол/.test(t)) return '🧹';
+    if (/книг|чита/.test(t)) return '📚';
+    if (/спорт|трен|заряд/.test(t)) return '💪';
+    if (/продукт|магазин|покуп/.test(t)) return '🛒';
+    return '✨';
   }
   window.__todayScope = scope => navigate('today', { scope });
 
