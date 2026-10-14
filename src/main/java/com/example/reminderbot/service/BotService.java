@@ -121,7 +121,6 @@ public class BotService {
             TeamMember membership = db.teamMembers().findByChatId(conn, chatId);
             if (membership == null) return Map.of("error", "Ты не состоишь в команде");
             if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
-            if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
             String id = slugify(title);
             if (findTask(conn, id) != null) id = id + "-" + shortId().substring(0, 4);
             TaskKind kind;
@@ -331,6 +330,8 @@ public class BotService {
 
     public Map<String, Object> apiCreateTask(long chatId, String title, String kindCode, String unit,
             int interval, int slots, String note) {
+        if (title == null || title.isBlank()) return Map.of("error", "Название не может быть пустым");
+        if (kindCode == null) return Map.of("error", "Укажи тип дела");
         try (java.sql.Connection conn = db.getConnection()) {
             String id = slugify(title);
             if (findTask(conn, id) != null) id = id + "-" + shortId().substring(0, 4);
