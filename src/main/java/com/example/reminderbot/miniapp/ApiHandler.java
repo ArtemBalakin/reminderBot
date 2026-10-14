@@ -55,7 +55,7 @@ public class ApiHandler implements HttpHandler {
         }
 
         try {
-            Set<String> postPaths = Set.of("/api/subscribe", "/api/unsubscribe", "/api/task/new", "/api/task/update", "/api/task/edit", "/api/team/create", "/api/team/join", "/api/team/leave", "/api/team/members/promote", "/api/team/members/demote", "/api/team/members/remove", "/api/team/tasks/new");
+            Set<String> postPaths = Set.of("/api/subscribe", "/api/unsubscribe", "/api/task/new", "/api/task/update", "/api/task/edit", "/api/team/create", "/api/team/join", "/api/team/leave", "/api/team/members/promote", "/api/team/members/demote", "/api/team/members/remove", "/api/team/tasks/new", "/api/today/complete");
             if (postPaths.contains(path) && !"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 respondJson(exchange, 405, Map.of("error", "Method not allowed"));
                 return;
@@ -66,6 +66,7 @@ public class ApiHandler implements HttpHandler {
                 case "/api/subs" -> botService.apiGetSubscriptions(chatId);
                 case "/api/today" -> botService.apiGetTodayBoard(chatId, "team".equals(q.get("scope")));
                 case "/api/board" -> botService.apiGetBoard();
+                case "/api/today/complete" -> botService.apiCompleteTodayTask(chatId, textNode(readJsonBody(exchange), "taskId"));
                 case "/api/stats" -> botService.apiGetStats();
                 case "/api/calendar/eager" -> {
                     int y = intParam(q, "year", java.time.LocalDate.now().getYear());
