@@ -448,13 +448,13 @@
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
-    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><span class="cat-hero__cat" aria-hidden="true">🐈</span></div>`;
+    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><img class="cat-hero__cat" src="/static/cat-home.svg" alt="Рыжий кот отдыхает у окна"></div>`;
     const todayTasks = (data.sections || []).flatMap(s => s.tasks || []);
     const doneCount = todayTasks.filter(t => t.done).length;
     html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
     html += `<div class="page-header">Сегодня</div>`;
     if (!data.error && todayTasks.length > 0 && doneCount === todayTasks.length) {
-      html += `<div class="cat-celebrate"><span class="cat" aria-hidden="true">😺🏆</span><h2>Отлично!</h2><p>Все дела на сегодня выполнены. Кот тобой гордится! ✨</p></div>`;
+      html += `<div class="cat-celebrate"><img class="cat" src="/static/cat-celebrate.svg" alt="Радостный кот с кубком"><h2>Отлично!</h2><p>Все дела на сегодня выполнены. Кот тобой гордится! ✨</p></div>`;
     }
     if (data.error || !data.sections || data.sections.length === 0) {
       html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
