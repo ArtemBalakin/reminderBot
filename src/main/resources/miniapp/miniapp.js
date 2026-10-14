@@ -447,8 +447,8 @@
     const doneCount = todayTasks.filter(t => t.done).length;
     const dateLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', weekday: 'long' }).format(new Date());
     let html = `<div class="cat-hero">
-      <img class="cat-hero__cat cat-light" src="/static/cat-home.svg" alt="Рыжий кот на зелёной подушке у солнечного окна">
-      <img class="cat-hero__cat cat-night" src="/static/cat-home-night.svg" alt="Кот спит в уютной комнате ночью">
+      <img class="cat-hero__cat cat-light" src="/static/cat-home-light.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-home.svg&quot;" alt="Рыжий кот на зелёной подушке у солнечного окна">
+      <img class="cat-hero__cat cat-night" src="/static/cat-home-night.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-home-night.svg&quot;" alt="Кот спит в уютной комнате ночью">
       <div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div>
         <div class="cat-hero__sub">Здесь живут твои планы и маленькие победы</div></div>
     </div>`;
@@ -473,12 +473,12 @@
         html += `<div class="home-task">
           <span class="home-task__icon" aria-hidden="true">${taskEmoji(t.taskTitle)}</span>
           <button class="home-task__details task-open" onclick="window.__showTask('${esc(t.taskId || '')}')"><span class="home-task__title">${esc(t.taskTitle)}</span>
-            <span class="home-task__meta">${esc(t.status)}${effectiveScope === 'team' ? ' · '+esc(t.user) : ''}</span></span>
+            <span class="home-task__meta">${esc(t.status)}${effectiveScope === 'team' ? ' · '+esc(t.user) : ''}</span>
           </button><button class="home-task__check ${t.done ? 'done' : ''}" ${t.done || !t.mine ? 'disabled' : `onclick="window.__completeToday(\'${esc(t.taskId)}\')"`} aria-label="Отметить выполненным">${t.done ? '✓' : ''}</button></div>`;
       }
       html += `</div>`;
       if (doneCount === todayTasks.length) html += `<div class="cat-celebrate" style="margin-top:16px">
-        <img class="cat" src="/static/cat-celebrate.svg" alt="Радостный рыжий кот с кубком">
+        <img class="cat" src="/static/cat-success.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Радостный рыжий кот с кубком">
         <h2>Отлично!</h2><p>Все дела на сегодня выполнены ✨</p></div>`;
     }
     app.innerHTML = html;
@@ -499,7 +499,7 @@
   };
   function renderSuccess() {
     app.innerHTML = `<div class="success-screen">
-      <div class="success-art"><img src="/static/cat-celebrate.svg" alt="Счастливый рыжий кот с кубком"></div>
+      <div class="success-art"><img src="/static/cat-success.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Счастливый рыжий кот с кубком"></div>
       <h1>Отлично!</h1>
       <p>Задача выполнена! 🎉</p>
       <div class="success-quote">Маленькие шаги ведут к большим результатам ♥</div>
@@ -696,7 +696,7 @@
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
     const theme = localStorage.getItem('reminder-theme') || 'auto';
-    let html = `<div class="page-header">Мой профиль</div><div class="profile-welcome"><img src="/static/cat-celebrate.svg" alt="Кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Хорошего дня!'}</small></div></div><div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Мои напоминания</button><button onclick="window.__nav('stats')">📊 Статистика</button><button onclick="window.__nav('teamMembers')">👥 Команда</button></div>`;
+    let html = `<div class="page-header">Мой профиль</div><div class="profile-welcome"><img src="/static/cat-success.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Хорошего дня!'}</small></div></div><div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Мои напоминания</button><button onclick="window.__nav('stats')">📊 Статистика</button><button onclick="window.__nav('teamMembers')">👥 Команда</button></div>`;
     html += `<div class="section-title">Оформление</div><div class="cat-theme-picker">
       <button class="${theme === 'light' ? 'selected' : ''}" onclick="window.__setTheme('light')">☀️ Светлая</button>
       <button class="${theme === 'dark' ? 'selected' : ''}" onclick="window.__setTheme('dark')">🌙 Тёмная</button>
