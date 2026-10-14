@@ -696,7 +696,7 @@
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
     const theme = localStorage.getItem('reminder-theme') || 'auto';
-    let html = `<div class="page-header">Мой профиль</div><div class="profile-welcome"><img src="/static/cat-success.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Хорошего дня!'}</small></div></div><div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Мои напоминания</button><button onclick="window.__nav('stats')">📊 Статистика</button><button onclick="window.__nav('teamMembers')">👥 Команда</button></div>`;
+    let html = `<div class="page-header">Мой профиль</div><div class="profile-welcome"><img src="/static/cat-avatar.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Хорошего дня!'}</small></div></div><div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Мои напоминания</button><button onclick="window.__nav('stats')">📊 Статистика</button><button onclick="window.__nav('teamMembers')">👥 Команда</button></div>`;
     html += `<div class="section-title">Оформление</div><div class="cat-theme-picker">
       <button class="${theme === 'light' ? 'selected' : ''}" onclick="window.__setTheme('light')">☀️ Светлая</button>
       <button class="${theme === 'dark' ? 'selected' : ''}" onclick="window.__setTheme('dark')">🌙 Тёмная</button>
