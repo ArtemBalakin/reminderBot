@@ -1734,6 +1734,10 @@ public class BotService {
                 telegram.answerCallbackQuery(callbackId, "Нет доступа к напоминанию");
                 return;
             }
+            if (prompt != null && prompt.chatId() != chatId) {
+                telegram.answerCallbackQuery(callbackId, "Нет доступа к напоминанию");
+                return;
+            }
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
@@ -1756,6 +1760,10 @@ public class BotService {
     private void handlePromptSnooze(String callbackId, String promptId, int hours, long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             ActivePrompt prompt = findPrompt(conn, promptId);
+            if (prompt != null && prompt.chatId() != chatId) {
+                telegram.answerCallbackQuery(callbackId, "Нет доступа к напоминанию");
+                return;
+            }
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
@@ -1774,6 +1782,10 @@ public class BotService {
     private void handlePromptGoDoing(String callbackId, String promptId, long chatId) {
         try (java.sql.Connection conn = db.getConnection()) {
             ActivePrompt prompt = findPrompt(conn, promptId);
+            if (prompt != null && prompt.chatId() != chatId) {
+                telegram.answerCallbackQuery(callbackId, "Нет доступа к напоминанию");
+                return;
+            }
             if (prompt == null) {
                 telegram.answerCallbackQuery(callbackId, "Уже обработано");
                 return;
