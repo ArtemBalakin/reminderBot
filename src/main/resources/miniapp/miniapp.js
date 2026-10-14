@@ -26,10 +26,19 @@
   const initData = tg ? tg.initData : '';
   const app = document.getElementById('app');
   const nav = document.getElementById('nav');
-  let currentPage = 'tasks';
+  const preferredTheme = localStorage.getItem('reminder-theme') || 'auto';
+  function applyTheme(mode) {
+    const dark = mode === 'dark' || (mode === 'auto' && (tg ? tg.colorScheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches));
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  }
+  applyTheme(preferredTheme);
+  if (tg) tg.onEvent('themeChanged', () => applyTheme(localStorage.getItem('reminder-theme') || 'auto'));
+  window.__setTheme = mode => { localStorage.setItem('reminder-theme', mode); applyTheme(mode); navigate('settings'); };
+  let currentPage = 'today';
   let pageStack = [];
 
-  let startPage = 'tasks';
+  let startPage = 'today';
   let startParams = null;
 
   const params = new URLSearchParams(location.search);
@@ -439,6 +448,10 @@
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
+    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><span class="cat-hero__cat" aria-hidden="true">🐈</span></div>`;
+    const todayTasks = (data.sections || []).flatMap(s => s.tasks || []);
+    const doneCount = todayTasks.filter(t => t.done).length;
+    html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
     html += `<div class="page-header">Сегодня</div>`;
     if (data.error || !data.sections || data.sections.length === 0) {
       html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
@@ -634,7 +647,13 @@
   async function renderSettings() {
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
+    const theme = localStorage.getItem('reminder-theme') || 'auto';
     let html = `<div class="page-header">Настройки</div>`;
+    html += `<div class="section-title">Оформление</div><div class="cat-theme-picker">
+      <button class="${theme === 'light' ? 'selected' : ''}" onclick="window.__setTheme('light')">☀️ Светлая</button>
+      <button class="${theme === 'dark' ? 'selected' : ''}" onclick="window.__setTheme('dark')">🌙 Тёмная</button>
+      <button class="${theme === 'auto' ? 'selected' : ''}" onclick="window.__setTheme('auto')">⚙️ Авто</button>
+    </div>`;
     html += `<div class="card">
       <div class="info-row">
         <span class="info-label">Пользователь</span>
