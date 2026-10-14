@@ -1036,6 +1036,10 @@ public class BotService {
             return;
         }
         if (text.equals("/import")) {
+            if (!isImportAdministrator(chatId)) {
+                telegram.sendMessage(chatId, "Импорт каталога разрешён только администратору бота.");
+                return;
+            }
             try (java.sql.Connection conn = db.getConnection()) {
                 db.sessions().upsert(conn, chatId, new UserSession(SessionType.IMPORT_CATALOG_FILE, Map.of(), null));
             } catch (java.sql.SQLException e) { System.err.println("DB err " + e.getMessage()); }
@@ -1289,6 +1293,10 @@ public class BotService {
     public record CatalogImport(List<TaskDefinition> tasks) {}
 
     private void handleImportFile(UserProfile profile, TelegramClient.Document document) {
+        if (!isImportAdministrator(profile.chatId())) {
+            telegram.sendMessage(profile.chatId(), "Нет прав на импорт каталога.");
+            return;
+        }
         try {
             String filePath = telegram.getFilePath(document.fileId());
             byte[] bytes = telegram.downloadFile(filePath);
@@ -3516,6 +3524,11 @@ public class BotService {
     private String userZone(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
         UserProfile p = getProfile(conn, chatId);
         return p != null ? p.zoneId() : defaultZone.getId();
+    }
+
+    private boolean isImportAdministrator(long chatId) {
+        String id = System.getenv("BOT_ADMIN_CHAT_ID");
+        return id != null && id.trim().equals(Long.toString(chatId));
     }
 
     private String displayUser(java.sql.Connection conn, long chatId) throws java.sql.SQLException {
