@@ -2,6 +2,7 @@ name: Verify build
 on:
   push:
     branches:
+      - main
       - feat/reminder-fixes-and-cat-themes
       - fix/real-miniapp-redesign
   pull_request:

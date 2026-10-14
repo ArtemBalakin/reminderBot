@@ -1,5 +1,20 @@
 ## Release notes — reminder fixes & cat themes
 
+### Mini App layout and profile update
+
+- The illustrated stylesheet is served by the Java server. Light and dark themes
+  share the Today, Calendar, Team, and Profile navigation.
+- The task form creates a task and saves its reminder using the task ID. Retrying
+  a failed schedule save reuses the created task instead of creating a duplicate.
+- Personal Today and Calendar views show the caller's subscriptions. Team views
+  still show the caller's own team. Dates use the saved user timezone.
+- Profile shows completion streaks, monthly counts, and week/month/year charts
+  from the caller's completion records. Existing settings remain available.
+- No new database migration is required for this update. Validation includes
+  `mvn verify`, an HTTP static-resource regression test, and local browser checks
+  with fixture APIs via `node scripts/verify-miniapp.cjs` (requires Playwright).
+
+
 This branch requires **Liquibase migration 008** before the application starts.
 It adds `users.last_tomorrow_reminder_for_date`; without it, user lookups fail.
 Run the existing migration job/process configured for your deployment.
