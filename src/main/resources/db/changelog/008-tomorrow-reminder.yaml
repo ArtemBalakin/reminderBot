@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-001-tomorrow-reminder-dedupe
+      author: reminderbot
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: last_tomorrow_reminder_for_date
+                  type: VARCHAR(10)
