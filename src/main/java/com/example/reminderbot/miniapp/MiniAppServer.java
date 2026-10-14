@@ -29,7 +29,7 @@ public class MiniAppServer {
             log.error("Не удалось запустить сервер мини-приложения", e);
             throw new IllegalStateException("Failed to start mini app server", e);
         }
-        for (String name : List.of("miniapp.html", "miniapp.css", "miniapp.js", "cat-theme.css", "cat-home.svg", "cat-celebrate.svg")) {
+        for (String name : List.of("miniapp.html", "miniapp.css", "miniapp.js", "cat-theme.css", "cat-home.svg", "cat-home-night.svg", "cat-celebrate.svg")) {
             byte[] data = loadResource("miniapp/" + name);
             if (data != null) {
                 staticCache.put(name, data);
