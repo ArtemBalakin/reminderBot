@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 390" role="img" aria-label="Радостный рыжий кот с кубком и конфетти">
+<defs><linearGradient id="f" x2="0" y2="1"><stop stop-color="#FFD17D"/><stop offset="1" stop-color="#ED8C44"/></linearGradient><linearGradient id="gold" x2="0" y2="1"><stop stop-color="#FFF1A2"/><stop offset="1" stop-color="#ECAF36"/></linearGradient></defs>
+<g stroke-width="9" stroke-linecap="round"><path d="M48 56l10 19" stroke="#65BDB0"/><path d="M342 53l-14 22" stroke="#F7A95C"/><path d="M90 107l-17 3" stroke="#CD81DB"/><path d="M302 112l20 7" stroke="#65BDB0"/><path d="M55 230l14 15" stroke="#FFBE68"/><path d="M353 220l-17 12" stroke="#CD81DB"/></g><g fill="#e6a956"><path d="M119 60l7 12-7 12-7-12Z"/><path d="M281 52l7 12-7 12-7-12Z"/></g>
+<ellipse cx="200" cy="343" rx="120" ry="22" fill="#895D3C" opacity=".13"/>
+<path d="M291 182Q340 167 335 224Q328 256 289 255" fill="none" stroke="#D47D37" stroke-width="29" stroke-linecap="round"/>
+<ellipse cx="200" cy="262" rx="103" ry="83" fill="url(#f)" stroke="#C8793B" stroke-width="5"/>
+<path d="M113 176L117 85Q117 65 134 75L164 110M235 111L272 72Q288 65 291 88L286 182" fill="url(#f)" stroke="#C8793B" stroke-width="5" stroke-linejoin="round"/>
+<path d="M129 111l-1-25 24 27M250 111l31-27-3 34" fill="#F29895"/>
+<ellipse cx="201" cy="168" rx="93" ry="89" fill="url(#f)" stroke="#C8793B" stroke-width="4"/>
+<path d="M151 174Q170 197 189 174M216 174Q235 197 254 174" fill="none" stroke="#563929" stroke-width="7" stroke-linecap="round"/>
+<path d="M188 199L212 199L200 212Z" fill="#A85A52"/>
+<path d="M200 212Q183 231 166 209M200 212Q217 231 235 209" fill="none" stroke="#60432E" stroke-width="4" stroke-linecap="round"/>
+<ellipse cx="145" cy="217" rx="16" ry="9" fill="#F7A49A"/><ellipse cx="258" cy="217" rx="16" ry="9" fill="#F7A49A"/>
+<path d="M145 237l-44-6M255 237l44-6" stroke="#AE683D" stroke-width="3" stroke-linecap="round"/>
+<ellipse cx="142" cy="317" rx="36" ry="25" fill="#FFD18C"/><ellipse cx="258" cy="317" rx="36" ry="25" fill="#FFD18C"/>
+<g transform="translate(284 28) rotate(16)"><path d="M0 13h49v48Q49 85 24 88Q0 85 0 61Z" fill="url(#gold)" stroke="#CC8D28" stroke-width="5"/><path d="M1 21h-16v16Q-15 57 2 53M47 21h16v16Q63 57 47 53" fill="none" stroke="#CC8D28" stroke-width="7"/><path d="M23 89v22M3 115h42" stroke="#CC8D28" stroke-width="10" stroke-linecap="round"/><path d="M24 33l5 9 10 1-8 7 3 10-10-6-10 6 3-10-8-7 10-1Z" fill="#FFF4BF"/></g>
+</svg>
