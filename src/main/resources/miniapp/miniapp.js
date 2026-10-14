@@ -42,13 +42,13 @@
     if (!initData) {
       throw new Error('Открой приложение через кнопку в Telegram-боте.');
     }
-    const sep = path.includes('?') ? '&' : '?';
-    const url = path + sep + 'initData=' + encodeURIComponent(initData);
     const opts = body
-      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-      : {};
-    const r = await fetch(url, opts);
-    return r.json();
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData }, body: JSON.stringify(body) }
+      : { headers: { 'X-Telegram-Init-Data': initData } };
+    const r = await fetch(path, opts);
+    const data = await r.json();
+    if (!r.ok && !data.error) throw new Error('Ошибка запроса');
+    return data;
   }
 
   /* ── Toast ──────────────────────────────────────────────────── */
@@ -202,9 +202,9 @@
 
     if (!data.isManual) {
       html += `<div class="btn-row">`;
-      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.number}')">🗓 ${data.mySubscription ? 'Изменить моё расписание' : 'Моё расписание'}</button>`;
+      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.id}')">🗓 ${data.mySubscription ? 'Изменить моё расписание' : 'Моё расписание'}</button>`;
       if (data.mySubscription) {
-        html += `<button class="btn btn-danger btn-sm" onclick="window.__unsub('${data.number}')">Отписаться</button>`;
+        html += `<button class="btn btn-danger btn-sm" onclick="window.__unsub('${data.id}')">Отписаться</button>`;
       }
       html += `</div>`;
     }
