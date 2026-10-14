@@ -85,11 +85,9 @@ public class SubscriptionDao {
             SELECT s.id, s.task_id, s.chat_id, s.day_of_week, s.day_of_month,
                    s.next_run_at, s.active, s.one_time_done
             FROM subscriptions s
-            LEFT JOIN prompts p ON s.id = p.subscription_id
             WHERE s.active = true 
               AND s.one_time_done = false
-              AND s.next_run_at <= ? 
-              AND p.id IS NULL
+              AND s.next_run_at <= ?
             ORDER BY s.next_run_at
             """;
         return loadSubscriptions(conn, sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));

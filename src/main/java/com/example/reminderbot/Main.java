@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -41,25 +42,29 @@ public class Main {
         connectionPool = new ConnectionPool(jdbcUrl, dbUser, dbPassword, dbSchema);
         DatabaseStore databaseStore = new DatabaseStore(connectionPool.getDataSource());
 
-        ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+        // Keep HTTP workers separate from the permanent Telegram long-poll loop.
+        ExecutorService httpExecutor = Executors.newFixedThreadPool(4);
+        ScheduledExecutorService workerExecutor = Executors.newScheduledThreadPool(2);
 
         BotService botService = new BotService(telegram, databaseStore, ZoneId.of(zone), appBaseUrl);
-        MiniAppServer miniAppServer = new MiniAppServer(webPort, executor, botService, token);
+        MiniAppServer miniAppServer = new MiniAppServer(webPort, httpExecutor, botService, token);
         miniAppServer.start();
 
-        executor.submit(new UpdatePoller(telegram, botService));
-        executor.scheduleWithFixedDelay(botService::processDueItems, 5, 30, TimeUnit.SECONDS);
+        workerExecutor.submit(new UpdatePoller(telegram, botService));
+        workerExecutor.scheduleWithFixedDelay(botService::processDueItems, 5, 30, TimeUnit.SECONDS);
 
         ConnectionPool finalPool = connectionPool;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Штатное завершение работы...");
-            executor.shutdown();
+            workerExecutor.shutdown();
+            httpExecutor.shutdown();
             try {
-                if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
+                if (!workerExecutor.awaitTermination(10, TimeUnit.SECONDS)) workerExecutor.shutdownNow();
+                if (!httpExecutor.awaitTermination(10, TimeUnit.SECONDS)) httpExecutor.shutdownNow();
             } catch (InterruptedException e) {
-                executor.shutdownNow();
+                workerExecutor.shutdownNow();
+                httpExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
             miniAppServer.stop(0);
             if (finalPool != null) {

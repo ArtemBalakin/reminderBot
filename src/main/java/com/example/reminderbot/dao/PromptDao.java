@@ -176,6 +176,17 @@ public class PromptDao {
         }
     }
 
+    public void deleteByChatId(Connection conn, long chatId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts WHERE chat_id = ?")) {
+            ps.setLong(1, chatId);
+            ps.executeUpdate();
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            throw e;
+        }
+    }
+
     public void deleteAll(Connection conn) throws SQLException {
         try {
             try (PreparedStatement ps = conn.prepareStatement("DELETE FROM prompts")) {

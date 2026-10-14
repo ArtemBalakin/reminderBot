@@ -1,3 +1,25 @@
+## Release notes — reminder fixes & cat themes
+
+This branch requires **Liquibase migration 008** before the application starts.
+It adds `users.last_tomorrow_reminder_for_date`; without it, user lookups fail.
+Run the existing migration job/process configured for your deployment.
+
+- `BOT_TOKEN`, `BOT_DB_URL` (or the documented PG environment) remain required.
+- Optional `BOT_ADMIN_CHAT_ID`: Telegram numeric chat ID permitted to use
+  `/import`; importing a shared catalog is disabled unless this variable is set.
+- Mini App authentication now accepts `X-Telegram-Init-Data`; legacy query
+  authentication remains temporarily supported. Signed data expires after 24 hours.
+- The Mini App opens at **Today**, with a cat-themed light/dark/auto selector in
+  **Settings**. The selected theme is saved in local browser storage.
+- CI: `mvn -B verify` (JUnit 5 tests) and `docker build -t reminderbot:ci .`.
+
+**Deployment notes:** do not run two Telegram long-polling instances under the same
+bot token. PostgreSQL advisory locking serializes scheduler passes, but it does
+not solve Telegram message delivery retries after a network failure. No
+end-to-end test against a running Telegram bot/real DB has been performed yet.
+
+---
+
 # Reminder Bot v7
 
 Java 21 + Maven Telegram-бот для бытовых дел и напоминаний.

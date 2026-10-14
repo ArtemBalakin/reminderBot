@@ -26,10 +26,19 @@
   const initData = tg ? tg.initData : '';
   const app = document.getElementById('app');
   const nav = document.getElementById('nav');
-  let currentPage = 'tasks';
+  const preferredTheme = localStorage.getItem('reminder-theme') || 'auto';
+  function applyTheme(mode) {
+    const dark = mode === 'dark' || (mode === 'auto' && (tg ? tg.colorScheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches));
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  }
+  applyTheme(preferredTheme);
+  if (tg) tg.onEvent('themeChanged', () => applyTheme(localStorage.getItem('reminder-theme') || 'auto'));
+  window.__setTheme = mode => { localStorage.setItem('reminder-theme', mode); applyTheme(mode); navigate('settings'); };
+  let currentPage = 'today';
   let pageStack = [];
 
-  let startPage = 'tasks';
+  let startPage = 'today';
   let startParams = null;
 
   const params = new URLSearchParams(location.search);
@@ -42,13 +51,13 @@
     if (!initData) {
       throw new Error('Открой приложение через кнопку в Telegram-боте.');
     }
-    const sep = path.includes('?') ? '&' : '?';
-    const url = path + sep + 'initData=' + encodeURIComponent(initData);
     const opts = body
-      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-      : {};
-    const r = await fetch(url, opts);
-    return r.json();
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData }, body: JSON.stringify(body) }
+      : { headers: { 'X-Telegram-Init-Data': initData } };
+    const r = await fetch(path, opts);
+    const data = await r.json();
+    if (!r.ok && !data.error) throw new Error('Ошибка запроса');
+    return data;
   }
 
   /* ── Toast ──────────────────────────────────────────────────── */
@@ -202,9 +211,9 @@
 
     if (!data.isManual) {
       html += `<div class="btn-row">`;
-      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.number}')">🗓 ${data.mySubscription ? 'Изменить моё расписание' : 'Моё расписание'}</button>`;
+      html += `<button class="btn btn-primary" onclick="window.__subscribe('${data.id}')">🗓 ${data.mySubscription ? 'Изменить моё расписание' : 'Моё расписание'}</button>`;
       if (data.mySubscription) {
-        html += `<button class="btn btn-danger btn-sm" onclick="window.__unsub('${data.number}')">Отписаться</button>`;
+        html += `<button class="btn btn-danger btn-sm" onclick="window.__unsub('${data.id}')">Отписаться</button>`;
       }
       html += `</div>`;
     }
@@ -439,7 +448,14 @@
         <button class="scope-btn ${effectiveScope === 'team' ? 'active' : ''}" onclick="window.__todayScope('team')">${esc(team.teamName)}</button>
       </div>`;
     }
+    html += `<div class="cat-hero"><div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div><div class="cat-hero__sub">Сегодня хороший день, чтобы сделать что-то полезное и уютное</div></div><img class="cat-hero__cat cat-light" src="/static/cat-home.svg" alt="Рыжий кот отдыхает у окна"><img class="cat-hero__cat cat-night" src="/static/cat-home-night.svg" alt="Кот отдыхает при лунном свете"></div>`;
+    const todayTasks = (data.sections || []).flatMap(s => s.tasks || []);
+    const doneCount = todayTasks.filter(t => t.done).length;
+    html += `<div class="cat-progress"><span>☀️ Сегодня <strong>${doneCount} из ${todayTasks.length}</strong> выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 100}%</span></div>`;
     html += `<div class="page-header">Сегодня</div>`;
+    if (!data.error && todayTasks.length > 0 && doneCount === todayTasks.length) {
+      html += `<div class="cat-celebrate"><img class="cat" src="/static/cat-celebrate.svg" alt="Радостный кот с кубком"><h2>Отлично!</h2><p>Все дела на сегодня выполнены. Кот тобой гордится! ✨</p></div>`;
+    }
     if (data.error || !data.sections || data.sections.length === 0) {
       html += `<div class="empty"><div class="empty-icon">☀️</div><div class="empty-text">${data.error ? esc(data.error) : 'На сегодня нет активных дел'}</div></div>`;
       app.innerHTML = html;
@@ -634,7 +650,13 @@
   async function renderSettings() {
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
+    const theme = localStorage.getItem('reminder-theme') || 'auto';
     let html = `<div class="page-header">Настройки</div>`;
+    html += `<div class="section-title">Оформление</div><div class="cat-theme-picker">
+      <button class="${theme === 'light' ? 'selected' : ''}" onclick="window.__setTheme('light')">☀️ Светлая</button>
+      <button class="${theme === 'dark' ? 'selected' : ''}" onclick="window.__setTheme('dark')">🌙 Тёмная</button>
+      <button class="${theme === 'auto' ? 'selected' : ''}" onclick="window.__setTheme('auto')">⚙️ Авто</button>
+    </div>`;
     html += `<div class="card">
       <div class="info-row">
         <span class="info-label">Пользователь</span>

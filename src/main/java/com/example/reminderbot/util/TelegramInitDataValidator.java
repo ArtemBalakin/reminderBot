@@ -1,6 +1,8 @@
 package com.example.reminderbot.util;
 
 import java.net.URLDecoder;
+import java.security.MessageDigest;
+import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.TreeMap;
@@ -14,6 +16,7 @@ import javax.crypto.spec.SecretKeySpec;
 public final class TelegramInitDataValidator {
 
     private static final String HMAC_SHA256 = "HmacSHA256";
+    private static final long MAX_AGE_SECONDS = 24 * 60 * 60;
 
     private TelegramInitDataValidator() {
     }
@@ -25,6 +28,9 @@ public final class TelegramInitDataValidator {
         try {
             Map<String, String> fields = parse(initData);
             String receivedHash = fields.remove("hash");
+            long authDate = Long.parseLong(fields.getOrDefault("auth_date", "0"));
+            long age = Instant.now().getEpochSecond() - authDate;
+            if (age < -300 || age > MAX_AGE_SECONDS) return false;
             if (receivedHash == null) {
                 return false;
             }
@@ -33,7 +39,8 @@ public final class TelegramInitDataValidator {
             byte[] secretKey = hmac(botToken.getBytes(StandardCharsets.UTF_8), "WebAppData".getBytes(StandardCharsets.UTF_8));
             byte[] computedHash = hmac(dataCheckString.getBytes(StandardCharsets.UTF_8), secretKey);
 
-            return toHex(computedHash).equalsIgnoreCase(receivedHash);
+            return MessageDigest.isEqual(toHex(computedHash).getBytes(StandardCharsets.US_ASCII),
+                    receivedHash.toLowerCase(java.util.Locale.ROOT).getBytes(StandardCharsets.US_ASCII));
         } catch (Exception e) {
             return false;
         }

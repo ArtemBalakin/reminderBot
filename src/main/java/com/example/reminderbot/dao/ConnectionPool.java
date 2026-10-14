@@ -14,7 +14,7 @@ public class ConnectionPool {
         config.setUsername(user);
         config.setPassword(password);
         config.setSchema(schema);
-        config.setMaximumPoolSize(2);
+        config.setMaximumPoolSize(8);
         config.setMinimumIdle(1);
         config.setConnectionTimeout(10000);
         config.setIdleTimeout(600000);
