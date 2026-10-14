@@ -762,6 +762,16 @@ public class BotService {
         List<TomorrowReminderAction> tomorrowReminders = new ArrayList<>();
         
         try (java.sql.Connection conn = db.getConnection()) {
+            // PostgreSQL session-level advisory lock: DAO writes commit independently,
+            // so a transaction lock would not protect the full scheduler pass.
+            boolean lockAcquired;
+            try (java.sql.PreparedStatement ps = conn.prepareStatement("SELECT pg_try_advisory_lock(71920421)");
+                 java.sql.ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                lockAcquired = rs.getBoolean(1);
+            }
+            if (!lockAcquired) return;
+            try {
             Instant now = Instant.now();
             
             // 1. Process due subscriptions (new prompts)
@@ -866,6 +876,12 @@ public class BotService {
             }
             
             collectTomorrowReminders(conn, now, tomorrowReminders);
+            } finally {
+                try (java.sql.PreparedStatement ps = conn.prepareStatement("SELECT pg_advisory_unlock(71920421)")) {
+                    ps.executeQuery().close();
+                }
+                conn.commit();
+            }
         } catch (java.sql.SQLException e) {
             System.err.println("Database error during processDueItems: " + e.getMessage());
         }
