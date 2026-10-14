@@ -68,6 +68,7 @@ public class ApiHandler implements HttpHandler {
                 case "/api/board" -> botService.apiGetBoard();
                 case "/api/today/complete" -> botService.apiCompleteTodayTask(chatId, textNode(readJsonBody(exchange), "taskId"));
                 case "/api/stats" -> botService.apiGetStats();
+                case "/api/profile" -> botService.apiGetProfile(chatId, q.getOrDefault("period", "month"));
                 case "/api/calendar/eager" -> {
                     int y = intParam(q, "year", java.time.LocalDate.now().getYear());
                     int m = intParam(q, "month", java.time.LocalDate.now().getMonthValue());
@@ -185,6 +186,8 @@ public class ApiHandler implements HttpHandler {
             };
             int code = result instanceof Map<?, ?> m && m.containsKey("error") ? 400 : 200;
             respondJson(exchange, code, result);
+        } catch (IllegalArgumentException e) {
+            respondJson(exchange, 400, Map.of("error", "Проверь дату, время и параметры расписания"));
         } catch (Exception e) {
             respondJson(exchange, 500, Map.of("error", "Внутренняя ошибка сервера"));
         }

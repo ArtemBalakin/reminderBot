@@ -98,3 +98,9 @@ data/catalog.json
 # Test output
 *.log
 *.log.*
+
+# Local developer tools and environment
+/.windsurf/
+/build-settings.xml
+/docker-compose.yml
+/sample/catalog.json

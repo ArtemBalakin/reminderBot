@@ -34,9 +34,29 @@
   }
   applyTheme(preferredTheme);
   if (tg) tg.onEvent('themeChanged', () => applyTheme(localStorage.getItem('reminder-theme') || 'auto'));
-  window.__setTheme = mode => { localStorage.setItem('reminder-theme', mode); applyTheme(mode); navigate('settings'); };
+  window.__setTheme = mode => { localStorage.setItem('reminder-theme', mode); applyTheme(mode); navigate('preferences'); };
   let currentPage = 'today';
+  let currentParams = null;
   let pageStack = [];
+  let userZone = null;
+
+  function dateKey(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: userZone || undefined, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const part = name => parts.find(p => p.type === name).value;
+    return `${part('year')}-${part('month')}-${part('day')}`;
+  }
+
+  function illustratedHeader(title, subtitle, extra = '') {
+    return `<div class="cat-hero ${extra}">
+      <img class="cat-hero__cat cat-light" src="/static/cat-home-light.webp" alt="Кот у солнечного окна">
+      <img class="cat-hero__cat cat-night" src="/static/cat-home-night.webp" alt="Кот в уютной комнате ночью">
+      <div class="cat-hero__copy"><h1 class="cat-hero__title">${esc(title)}</h1><p class="cat-hero__sub">${esc(subtitle)}</p></div>
+    </div>`;
+  }
+
+  function screenHeader(title, action = '') {
+    return `<header class="screen-header"><button class="icon-button" onclick="window.__goBack()" aria-label="Назад">‹</button><h1>${esc(title)}</h1>${action || '<span class="header-spacer"></span>'}</header>`;
+  }
 
   let startPage = 'today';
   let startParams = null;
@@ -74,13 +94,22 @@
     const btn = e.target.closest('.nav-btn');
     if (!btn) return;
     const page = btn.dataset.page;
+    const extra = page === 'newTask' ? {scope: currentPage === 'team' || currentParams?.scope === 'team' ? 'team' : 'personal'} : null;
     pageStack = [];
-    navigate(page);
+    navigate(page, extra);
   });
 
   function navigate(page, params) {
     currentPage = page;
-    nav.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+    currentParams = params || null;
+    document.body.dataset.page = page;
+    nav.hidden = ['newTask', 'success', 'subscribe', 'editTask'].includes(page);
+    const activePage = page === 'preferences' ? 'settings' : page === 'teamMembers' ? 'team' : page;
+    nav.querySelectorAll('.nav-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.page === activePage);
+      if (b.dataset.page === activePage) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
     app.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
     let pageRender;
     switch (page) {
@@ -92,6 +121,8 @@
       case 'stats': pageRender = renderStats(); break;
       case 'calendar': pageRender = renderCalendar(params); break;
       case 'settings': pageRender = renderSettings(); break;
+      case 'preferences': pageRender = renderPreferences(); break;
+      case 'team': pageRender = renderTeam(); break;
       case 'success': pageRender = renderSuccess(); break;
       case 'teamMembers': pageRender = renderTeamMembers(); break;
       case 'newTask': pageRender = renderNewTask(params); break;
@@ -105,14 +136,14 @@
         <div class="page-header">Ошибка</div>
         <div class="empty">
           <div class="empty-icon">⚠️</div>
-          <div class="empty-text">Не удалось загрузить экран. Попробуй ещё раз.</div>
+          <div class="empty-text">${esc(err.message || 'Не удалось загрузить экран. Попробуй ещё раз.')}</div>
         </div>`;
       toast('Ошибка загрузки экрана');
     });
   }
 
   function pushPage(page, params) {
-    pageStack.push({ page: currentPage, params: null });
+    pageStack.push({ page: currentPage, params: currentParams });
     navigate(page, params);
   }
 
@@ -188,7 +219,7 @@
   window.__teamTasksPage = p => navigate('tasks', { scope: 'team', page: p });
   window.__tasksScope = scope => navigate('tasks', { scope, page: 0 });
   window.__showTask = ref => pushPage('task', { ref });
-  window.__nav = (page, extra) => { pageStack.push({ page: currentPage }); navigate(page, extra); };
+  window.__nav = pushPage;
 
   /* ── Task Card ──────────────────────────────────────────────── */
   async function renderTaskCard(params) {
@@ -302,7 +333,7 @@
           <input type="time" id="sub-dated-time" class="input" step="60" value="${existingTime}">
         </div>`;
     }
-    html += `<button class="btn btn-primary" style="margin-top:16px" onclick="window.__saveSub('${data.number}', '${data.kind}', '${data.scheduleUnit}')">Сохранить</button>`;
+    html += `<button class="btn btn-primary" style="margin-top:16px" onclick="window.__saveSub('${esc(data.id)}', '${data.kind}', '${data.scheduleUnit}')">Сохранить</button>`;
     app.innerHTML = html;
 
     if (isRecurring) {
@@ -402,7 +433,8 @@
   /* ── My Subscriptions ───────────────────────────────────────── */
   async function renderSubs(params) {
     const scope = (params && params.scope) || 'personal';
-    const team = await api('/api/team');
+    const [team, settings] = await Promise.all([api('/api/team'), api('/api/settings')]);
+    userZone = settings.zoneId || userZone;
     const hasTeam = team && team.status === 'member';
     const effectiveScope = hasTeam ? scope : 'personal';
 
@@ -438,20 +470,15 @@
   /* ── Today Board ────────────────────────────────────────────── */
   async function renderToday(params) {
     const scope = (params && params.scope) || 'personal';
-    const team = await api('/api/team');
+    const [team, settings] = await Promise.all([api('/api/team'), api('/api/settings')]);
+    userZone = settings.zoneId || userZone;
     const hasTeam = team && team.status === 'member';
     const effectiveScope = hasTeam ? scope : 'personal';
     const data = await api('/api/today' + (effectiveScope === 'team' ? '?scope=team' : ''));
     const sections = Array.isArray(data.sections) ? data.sections : [];
     const todayTasks = sections.flatMap(section => (section.tasks || []).map(t => ({ ...t, user: section.user })));
     const doneCount = todayTasks.filter(t => t.done).length;
-    const dateLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', weekday: 'long' }).format(new Date());
-    let html = `<div class="cat-hero">
-      <img class="cat-hero__cat cat-light" src="/static/cat-home-light.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-home.svg&quot;" alt="Рыжий кот на зелёной подушке у солнечного окна">
-      <img class="cat-hero__cat cat-night" src="/static/cat-home-night.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-home-night.svg&quot;" alt="Кот спит в уютной комнате ночью">
-      <div class="cat-hero__copy"><div class="cat-hero__title">Мой дом ♡</div>
-        <div class="cat-hero__sub">Здесь живут твои планы и маленькие победы</div></div>
-    </div>`;
+    let html = illustratedHeader(effectiveScope === 'team' ? team.teamName : 'Мой дом', 'Сегодня хороший день для важных дел ☀️');
     if (hasTeam) {
       html += `<div class="scope-toggle">
         <button class="scope-btn ${effectiveScope === 'personal' ? 'active' : ''}" onclick="window.__todayScope('personal')">Личные</button>
@@ -459,8 +486,7 @@
       </div>`;
     }
     html += weekStrip();
-    html += `<div class="cat-progress"><span>✨ <strong>${doneCount} из ${todayTasks.length}</strong> дел выполнено</span><span>${todayTasks.length ? Math.round(doneCount / todayTasks.length * 100) : 0}%</span></div>
-      <div class="home-heading"><h2>Сегодня</h2><span class="card-sub">${esc(dateLabel)}</span></div>`;
+    html += `<div class="home-heading"><h2>Сегодня <small>${doneCount}/${todayTasks.length}</small></h2><button onclick="window.__nav('tasks', {scope:'${effectiveScope}'})">Все дела ›</button></div>`;
     if (data.error) {
       html += `<div class="empty-home"><h3>Не получилось загрузить дела</h3><p>${esc(data.error)}</p></div>`;
     } else if (!todayTasks.length) {
@@ -471,7 +497,7 @@
       html += `<div class="home-list">`;
       for (const t of todayTasks) {
         html += `<div class="home-task">
-          <span class="home-task__icon" aria-hidden="true">${taskEmoji(t.taskTitle)}</span>
+          <span class="home-task__icon ${taskColor(t.taskTitle)}" aria-hidden="true">${taskEmoji(t.taskTitle)}</span>
           <button class="home-task__details task-open" onclick="window.__showTask('${esc(t.taskId || '')}')"><span class="home-task__title">${esc(t.taskTitle)}</span>
             <span class="home-task__meta">${esc(t.status)}${effectiveScope === 'team' ? ' · '+esc(t.user) : ''}</span>
           </button><button class="home-task__check ${t.done ? 'done' : ''}" ${t.done || !t.mine ? 'disabled' : `onclick="window.__completeToday(\'${esc(t.taskId)}\')"`} aria-label="Отметить выполненным">${t.done ? '✓' : ''}</button></div>`;
@@ -484,27 +510,33 @@
     app.innerHTML = html;
   }
   function weekStrip() {
-    const now = new Date(); const fmt = new Intl.DateTimeFormat('ru-RU',{weekday:'short'});
+    const now = new Date(dateKey() + 'T12:00:00'); const fmt = new Intl.DateTimeFormat('ru-RU',{weekday:'short'});
     let html = '<div class="week-strip">';
-    for (let i=-2;i<=4;i++) {
+    for (let i=-1;i<=3;i++) {
       const d=new Date(now); d.setDate(d.getDate()+i);
-      html += '<button class="week-day '+(i===0?'active':'')+'" onclick="window.__nav(\'calendar\')"><span>'+fmt.format(d)+'</span><strong>'+d.getDate()+'</strong></button>';
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      html += `<button class="week-day ${i===0?'active':''}" onclick="window.__nav('calendar', {date:'${key}'})"><span>${fmt.format(d)}</span><strong>${d.getDate()}</strong></button>`;
     }
     return html+'</div>';
   }
   window.__completeToday = async taskId => {
-    const result = await api('/api/today/complete',{taskId});
-    if(result.error){toast(result.error);return;}
-    navigate('success');
+    if (window.__completing) return;
+    window.__completing = true;
+    try {
+      const result = await api('/api/today/complete',{taskId});
+      if(result.error){toast(result.error);return;}
+      navigate('success');
+    } catch (err) { toast(err.message); }
+    finally { window.__completing = false; }
   };
   function renderSuccess() {
-    app.innerHTML = `<div class="success-screen">
+    app.innerHTML = `<div class="success-screen"><button class="success-close icon-button" onclick="window.__nav('today')" aria-label="Закрыть">×</button>
       <div class="success-art"><img src="/static/cat-success.webp" onerror="this.onerror=null;this.src=&quot;/static/cat-celebrate.svg&quot;" alt="Счастливый рыжий кот с кубком"></div>
       <h1>Отлично!</h1>
       <p>Задача выполнена! 🎉</p>
       <div class="success-quote">Маленькие шаги ведут к большим результатам ♥</div>
       <button class="btn btn-primary" onclick="window.__nav('today')">Продолжить</button>
-      <button class="btn btn-secondary" onclick="window.__nav('tasks')">Посмотреть все дела</button>
+      <button class="btn btn-secondary" onclick="window.__nav('newTask')">Добавить ещё задачу</button>
     </div>`;
   }
 
@@ -517,6 +549,10 @@
     if (/спорт|трен|заряд/.test(t)) return '💪';
     if (/продукт|магазин|покуп/.test(t)) return '🛒';
     return '✨';
+  }
+  function taskColor(title) {
+    const icon = taskEmoji(title);
+    return icon === '🪴' ? 'icon-green' : icon === '📚' ? 'icon-red' : icon === '💪' ? 'icon-blue' : icon === '✨' ? 'icon-purple' : 'icon-orange';
   }
   window.__todayScope = scope => navigate('today', { scope });
 
@@ -585,12 +621,21 @@
   let calTeam = null;
 
   async function renderCalendar(params) {
-    const team = await api('/api/team');
+    const [team, settings] = await Promise.all([api('/api/team'), api('/api/settings')]);
+    userZone = settings.zoneId || userZone;
+    if (params && params.date) {
+      calSelected = params.date;
+      [calYear, calMonth] = params.date.split('-').map(Number);
+    } else if (!calSelected) {
+      const today = dateKey();
+      if (+today.slice(0,4) === calYear && +today.slice(5,7) === calMonth) calSelected = today;
+    }
     calTeam = team && team.status === 'member' ? team : null;
     if (!calTeam) calScope = 'personal';
     else if (params && params.scope) calScope = params.scope;
     calData = await api('/api/calendar/eager?year=' + calYear + '&month=' + calMonth +
-      (calScope === 'team' ? '&scope=team' : ''));
+      '&zoneId=' + encodeURIComponent(userZone || 'UTC') + (calScope === 'team' ? '&scope=team' : ''));
+    if (calData.error) throw new Error(calData.error);
     drawCalendar();
   }
 
@@ -598,8 +643,7 @@
     const days = calData && calData.days ? calData.days : {};
     const monthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
     const dowHeaders = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
-    const today = new Date();
-    const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+    const todayStr = dateKey();
 
     let html = '';
     if (calTeam) {
@@ -638,14 +682,14 @@
       if (isToday) cls += ' today';
       if (isSelected) cls += ' selected';
       if (hasTasks) cls += ' has-tasks';
-      html += `<div class="${cls}" onclick="window.__calSelect('${key}')"><div class="day-number">${d}</div>`;
+      html += `<button class="${cls}" aria-label="${key}" aria-pressed="${isSelected}" onclick="window.__calSelect('${key}')"><span class="day-number">${d}</span>`;
       if (hasTasks) {
         html += `<div class="day-dots">`;
         const dots = Math.min(tasks.length, 5);
         for (let i = 0; i < dots; i++) html += `<div class="day-dot"></div>`;
         html += `</div>`;
       }
-      html += `</div>`;
+      html += `</button>`;
     }
     html += `</div>`;
 
@@ -656,10 +700,7 @@
       html += `<div class="calendar-details">`;
       html += `<div class="section-title">${label} — ${selTasks.length} дел</div>`;
       for (const t of selTasks) {
-        html += `<div class="card card-clickable" onclick="window.__showTask('${esc(t.id)}')">`;
-        html += `<div class="card-title">${esc(t.title)}</div>`;
-        html += `<div class="card-sub">${esc(t.user)}</div>`;
-        html += `</div>`;
+        html += `<button class="home-task" onclick="window.__showTask('${esc(t.id)}')"><span class="home-task__icon ${taskColor(t.title)}">${taskEmoji(t.title)}</span><span class="home-task__details"><span class="home-task__title">${esc(t.title)}</span><span class="home-task__meta">${esc(t.time || '')}${calScope === 'team' ? ' · '+esc(t.user) : ''}</span></span><span class="row-chevron">›</span></button>`;
       }
       html += `</div>`;
     } else if (calSelected) {
@@ -693,6 +734,58 @@
 
   /* ── Settings ───────────────────────────────────────────────── */
   async function renderSettings() {
+    const [data, progress] = await Promise.all([api('/api/settings'), api('/api/profile?period=' + profilePeriod)]);
+    if (data.error || progress.error) throw new Error(data.error || progress.error);
+    userZone = data.zoneId;
+    const labels = {week:'Неделя', month:'Месяц', year:'Год'};
+    const max = Math.max(1, ...progress.series.map(point => point.count));
+    let html = `<header class="screen-header profile-header"><h1>Мой профиль</h1><button class="icon-button" onclick="window.__nav('preferences')" aria-label="Настройки профиля">⚙</button></header>
+      <div class="profile-welcome"><img src="/static/cat-avatar.webp" alt="Рыжий кот"><div><strong>${esc(data.firstName || 'Друг')}</strong><small>${data.username ? '@'+esc(data.username) : 'Каждый день — маленький шаг'}</small></div></div>
+      <div class="profile-counters"><div><strong>${progress.streak}</strong><span>Дней<br>подряд</span></div><div><strong>${progress.completedMonth}</strong><span>Выполнено<br>за месяц</span></div><div><strong>${progress.activeReminders}</strong><span>Активных<br>напоминаний</span></div></div>
+      <h2 class="section-title">Мой прогресс</h2><div class="period-tabs" role="group" aria-label="Период статистики">${Object.entries(labels).map(([key,label]) => `<button class="${key===profilePeriod?'active':''}" aria-pressed="${key===profilePeriod}" onclick="window.__profilePeriod('${key}')">${label}</button>`).join('')}</div>
+      <div class="progress-chart" role="img" aria-label="${esc(labels[profilePeriod])}: ${progress.total} выполнений">${progress.series.map(point => `<div class="progress-column" title="${point.date}: ${point.count}"><span style="height:${point.count ? Math.max(12, point.count/max*100) : 4}%" class="${point.count ? '' : 'zero'}"></span></div>`).join('')}</div>
+      <p class="chart-caption">${progress.total ? 'Выполнено за период: '+progress.total : 'Здесь появятся твои первые победы'}</p>
+      <h2 class="section-title">Выполненные дела</h2>`;
+    const total = progress.items.reduce((sum,item) => sum+item.count,0);
+    for (const item of progress.items) {
+      const pct = total ? Math.round(item.count/total*100) : 0;
+      html += `<div class="progress-task"><span class="home-task__icon ${taskColor(item.title)}">${taskEmoji(item.title)}</span><div><span>${esc(item.title)}</span><div class="progress-track"><i style="width:${pct}%"></i></div></div><small>${pct}%</small></div>`;
+    }
+    if (!progress.items.length) html += '<p class="card-sub">Отмечай дела выполненными, чтобы увидеть прогресс.</p>';
+    html += `<div class="profile-shortcuts"><button onclick="window.__nav('subs')">🔔 Напоминания</button><button onclick="window.__nav('tasks')">📋 Все дела</button><button onclick="window.__nav('preferences')">⚙ Настройки</button></div>`;
+    app.innerHTML = html;
+  }
+  let profilePeriod = 'month';
+  window.__profilePeriod = period => { profilePeriod = period; navigate('settings'); };
+
+  async function renderTeam() {
+    const team = await api('/api/team');
+    if (team.error) throw new Error(team.error);
+    if (team.status !== 'member') {
+      app.innerHTML = illustratedHeader('Моя команда', 'Вместе заботиться о делах проще') + await renderTeamSection();
+      return;
+    }
+    const [data, catalog] = await Promise.all([api('/api/team/members'), api('/api/team/tasks')]);
+    if (data.error || catalog.error) throw new Error(data.error || catalog.error);
+    let html = illustratedHeader(team.teamName, `${team.memberCount} участника`, 'team-hero');
+    html += '<div class="member-list">';
+    const roles = {OWNER:'Владелец', ADMIN:'Администратор', MEMBER:'Участник'};
+    for (const member of data.members) {
+      html += `<div class="member-row"><span class="member-avatar">${esc((member.name || '?').replace(/^@/, '').slice(0,1).toUpperCase())}</span><div><strong>${esc(member.name)}</strong><small>${roles[member.role] || esc(member.role)}</small></div><button class="icon-button" onclick="window.__nav('teamMembers')" aria-label="Управление участниками">›</button></div>`;
+    }
+    html += `</div><button class="btn btn-secondary invite-team" onclick="window.__inviteTeam()">＋ Пригласить участника</button><h2 class="section-title">Общие дела</h2>
+      <button class="list-link" onclick="window.__nav('tasks', {scope:'team'})"><span class="home-task__icon icon-orange">🏠</span><span><strong>Дела команды</strong><small>${catalog.total} в каталоге</small></span><b>›</b></button>
+      <button class="list-link" onclick="window.__nav('calendar', {scope:'team'})"><span class="home-task__icon icon-purple">📅</span><span><strong>Общий календарь</strong><small>Планы участников</small></span><b>›</b></button>
+      <button class="list-link" onclick="window.__nav('today', {scope:'team'})"><span class="home-task__icon icon-blue">👥</span><span><strong>Сегодня вместе</strong><small>Что нужно сделать</small></span><b>›</b></button>`;
+    window.__inviteTeam = async () => {
+      const message = `Присоединяйся к команде «${team.teamName}» в Reminder Bot. Открой вкладку «Команда» и введи название: ${team.teamName}`;
+      try { await navigator.clipboard.writeText(message); toast('Приглашение скопировано'); }
+      catch (_) { toast(`Название команды: ${team.teamName}. Отправь его участнику.`); }
+    };
+    app.innerHTML = html;
+  }
+
+  async function renderPreferences() {
     const data = await api('/api/settings');
     const tzOptions = ['Asia/Almaty', 'Europe/Moscow', 'Europe/Vilnius', 'Europe/Berlin', 'UTC'];
     const theme = localStorage.getItem('reminder-theme') || 'auto';
@@ -756,7 +849,7 @@
         ${team.canManage && team.pendingCount > 0 ? `<div class="info-row"><span class="info-label">Заявок на вступление</span><span class="info-value">${team.pendingCount}</span></div>` : ''}
       </div>
       <button class="btn btn-secondary" style="margin-top:8px" onclick="window.__nav('teamMembers')">👥 Участники</button>
-      <div class="card-sub" style="margin-top:8px">Дела команды — переключатель наверху вкладки «Дела».${team.canManage ? ' Заявки на вступление — команда /teamrequests в чате с ботом.' : ''}</div>`;
+      <div class="card-sub" style="margin-top:8px">Общие дела и календарь доступны во вкладке «Команда».${team.canManage ? ' Заявки на вступление — команда /teamrequests в чате с ботом.' : ''}</div>`;
       if (!team.isOwner) {
         html += `<button class="btn btn-danger" style="margin-top:8px" onclick="window.__teamLeave()">Покинуть команду</button>`;
       } else {
@@ -885,39 +978,65 @@
   function renderNewTask(params) {
     const scope = (params && params.scope) || 'personal';
     window.__newTaskScope = scope;
-    let html = backRow();
-    html += `<div class="page-header">Новая задача</div><div class="form-intro">Добавим ещё одно полезное дело в твой день 🌿</div>`;
-    html += `<div class="input-group">
-      <label>Название</label>
-      <input type="text" id="new-title" class="input" placeholder="Как назвать дело?">
-    </div>`;
-    html += `<div class="input-group">
-      <label>Тип</label>
-      <div class="select-grid">
-        <button class="btn btn-secondary kind-btn active" data-kind="DAY" onclick="window.__selectKind(this)">🔁 Каждый N день</button>
-        <button class="btn btn-secondary kind-btn" data-kind="WEEK" onclick="window.__selectKind(this)">📆 Каждую N нед.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MONTH" onclick="window.__selectKind(this)">🗓 Каждый N мес.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="THIS_WEEK" onclick="window.__selectKind(this)">⚡ Разово на этой</button>
-        <button class="btn btn-secondary kind-btn" data-kind="NEXT_WEEK" onclick="window.__selectKind(this)">⏭ Разово на след.</button>
-        <button class="btn btn-secondary kind-btn" data-kind="MANUAL" onclick="window.__selectKind(this)">🖐 Ручное</button>
-      </div>
-    </div>`;
-    html += `<div id="interval-group" class="input-group">
-      <label>Интервал повторения</label>
-      <input type="number" id="new-interval" class="input" value="1" min="1">
-    </div>`;
-    html += `<div id="slots-group" class="input-group">
-      <label>Сколько раз выполнять?</label>
-      <input type="number" id="new-slots" class="input" value="1" min="1">
-    </div>`;
-    html += `<div class="input-group">
-      <label>Заметка (необязательно)</label>
-      <input type="text" id="new-note" class="input" placeholder="Короткая заметка">
-    </div>`;
-    html += `<button class="btn btn-primary" onclick="window.__createTask()">Создать</button>`;
-    app.innerHTML = html;
-    window.__selectedKind = 'DAY';
+    window.__createdTaskId = null;
+    app.innerHTML = `${screenHeader('Новая задача', '<button class="icon-button" onclick="window.__goBack()" aria-label="Закрыть">×</button>')}
+      <form id="new-task-form" class="task-form" onsubmit="event.preventDefault();window.__createTask()">
+      <div class="task-type-tabs" role="group" aria-label="Тип задачи"><button type="button" class="active" onclick="window.__taskType(this,'task')">Задача</button><button type="button" onclick="window.__taskType(this,'habit')">Привычка</button><button type="button" onclick="window.__taskType(this,'event')">Событие</button></div>
+      <label class="task-title-input"><span class="home-task__icon icon-green">🌿</span><input id="new-title" required maxlength="200" placeholder="Что нужно сделать?" aria-label="Название задачи"></label>
+      <label class="form-field-label" for="new-date">Дата</label><div class="form-row"><span class="field-icon icon-blue">📅</span><input type="date" id="new-date" class="row-input" required value="${dateKey()}" min="${dateKey()}"></div>
+      <div class="form-row"><span class="field-icon">◷</span><label class="form-row-copy" for="new-time">Время<input type="time" id="new-time" class="row-input" value="10:00" required></label><label class="toggle"><input id="new-reminder" type="checkbox" checked onchange="window.__reminderToggle()" aria-label="Напоминать в выбранное время"><span class="slider"></span></label></div>
+      <div class="form-row"><span class="field-icon">↻</span><label class="form-row-copy" for="new-repeat">Повторение<select id="new-repeat" class="row-input" onchange="window.__repeatChanged()"><option value="THIS_WEEK">Без повторения</option><option value="DAY">Каждый день</option><option value="WEEK">Каждую неделю</option><option value="MONTH">Каждый месяц</option><option value="NEXT_WEEK">Разово на следующей неделе</option><option value="MANUAL">Без расписания</option></select></label></div>
+      <div class="form-row"><span class="field-icon">♧</span><div class="form-row-copy">Напоминание<small id="reminder-description">В выбранное время</small></div><span class="row-chevron">›</span></div>
+      <div class="form-row"><span class="field-icon icon-orange">⌂</span><label class="form-row-copy" for="new-scope">Список<select id="new-scope" class="row-input" onchange="window.__newTaskScope=this.value"><option value="personal" ${scope==='personal'?'selected':''}>Личные дела</option><option value="team" ${scope==='team'?'selected':''}>Дела команды</option></select></label></div>
+      <details class="advanced-options"><summary>Дополнительные параметры</summary><div id="interval-group" class="input-group"><label for="new-interval">Интервал повторения</label><input type="number" id="new-interval" class="input" value="1" min="1"></div><div id="slots-group" class="input-group"><label for="new-slots">Сколько раз выполнять?</label><input type="number" id="new-slots" class="input" value="1" min="1"></div></details>
+      <label class="form-field-label" for="new-note">Заметка</label><textarea id="new-note" class="task-note" placeholder="Добавить заметку…" rows="3"></textarea>
+      <p id="task-save-error" class="form-error" role="alert" hidden></p><button type="submit" id="task-save" class="btn btn-primary">Сохранить задачу</button></form>`;
+    window.__selectedKind = 'THIS_WEEK';
+    window.__repeatChanged();
+    // Use the saved timezone even when the creation tab is opened first.
+    api('/api/settings').then(settings => {
+      if (currentPage !== 'newTask') return;
+      userZone = settings.zoneId || userZone;
+      const input = document.getElementById('new-date');
+      const nextHour = new Date(Date.now()+3600000);
+      if (!input.dataset.changed) input.value = dateKey(nextHour);
+      input.min = dateKey();
+      const time = document.getElementById('new-time');
+      if (!time.dataset.changed) time.value = new Intl.DateTimeFormat('en-GB',{timeZone:userZone || undefined,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(nextHour);
+    }).catch(err => toast(err.message));
+    document.getElementById('new-date').addEventListener('input', event => {event.target.dataset.changed='true';});
+    document.getElementById('new-time').addEventListener('input', event => {event.target.dataset.changed='true';});
+    api('/api/team').then(team => {
+      if (currentPage !== 'newTask') return;
+      const select = document.getElementById('new-scope');
+      if (team.status !== 'member') {
+        select.value = 'personal'; select.querySelector('[value="team"]').disabled = true;
+        window.__newTaskScope = 'personal';
+      } else select.querySelector('[value="team"]').textContent = team.teamName;
+    }).catch(err => toast(err.message));
   }
+  window.__taskType = (button, type) => {
+    document.querySelectorAll('.task-type-tabs button').forEach(b => b.classList.toggle('active', b===button));
+    document.getElementById('new-repeat').value = type === 'habit' ? 'DAY' : 'THIS_WEEK';
+    document.getElementById('new-title').placeholder = type === 'habit' ? 'Какая полезная привычка?' : type === 'event' ? 'Что за событие?' : 'Что нужно сделать?';
+    window.__repeatChanged();
+  };
+  window.__reminderToggle = () => {
+    const enabled = document.getElementById('new-reminder').checked && window.__selectedKind !== 'MANUAL';
+    document.getElementById('new-time').disabled = !enabled;
+    document.getElementById('new-time').required = enabled;
+    document.getElementById('new-date').required = enabled;
+    document.getElementById('reminder-description').textContent = enabled ? 'В выбранное время' : 'Без напоминания';
+  };
+  window.__repeatChanged = () => {
+    const kind = document.getElementById('new-repeat').value;
+    window.__selectedKind = kind;
+    document.getElementById('interval-group').hidden = !['DAY','WEEK','MONTH'].includes(kind);
+    document.getElementById('slots-group').hidden = kind === 'MANUAL';
+    document.getElementById('new-reminder').disabled = kind === 'MANUAL';
+    document.getElementById('new-date').disabled = kind === 'MANUAL';
+    window.__reminderToggle();
+  };
   window.__selectKind = btn => {
     document.querySelectorAll('.kind-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -934,17 +1053,43 @@
     }
   };
   window.__createTask = async () => {
+    const form = document.getElementById('new-task-form');
+    if (!form.reportValidity() || window.__savingTask) return;
     const title = document.getElementById('new-title')?.value?.trim();
     if (!title) { toast('Введи название'); return; }
-    const kind = window.__selectedKind || 'DAY';
+    const kind = window.__selectedKind || 'THIS_WEEK';
     const interval = parseInt(document.getElementById('new-interval')?.value, 10) || 1;
     const slots = parseInt(document.getElementById('new-slots')?.value, 10) || 1;
     const note = document.getElementById('new-note')?.value?.trim() || null;
     const endpoint = window.__newTaskScope === 'team' ? '/api/team/tasks/new' : '/api/task/new';
-    const r = await api(endpoint, { title, kindCode: kind, unit: kind, interval, slots, note });
-    if (r.error) { toast(r.error); return; }
-    toast('✅ Добавлено: ' + r.title);
-    goBack();
+    const save = document.getElementById('task-save');
+    const error = document.getElementById('task-save-error');
+    window.__savingTask = true; save.disabled = true; error.hidden = true;
+    try {
+      if (!window.__createdTaskId) {
+        const r = await api(endpoint, { title, kindCode: kind, unit: kind, interval, slots, note });
+        if (r.error) throw new Error(r.error);
+        window.__createdTaskId = r.id;
+      }
+      const withReminder = document.getElementById('new-reminder').checked && kind !== 'MANUAL';
+      if (withReminder) {
+        const result = await api('/api/subscribe', {taskRef:window.__createdTaskId, mode:'dated', date:document.getElementById('new-date').value, time:document.getElementById('new-time').value});
+        if (result.error) throw new Error(result.error);
+      }
+      toast('Задача сохранена');
+      const id = window.__createdTaskId;
+      window.__createdTaskId = null;
+      if (withReminder) navigate('today', {scope:window.__newTaskScope});
+      else navigate('task', {ref:id});
+    } catch (err) {
+      error.textContent = (window.__createdTaskId ? 'Дело создано, расписание пока не сохранено. ' : '') + err.message;
+      error.hidden = false;
+      if (window.__createdTaskId) {
+        ['new-title','new-repeat','new-scope','new-interval','new-slots','new-note'].forEach(id => document.getElementById(id).disabled = true);
+        document.querySelectorAll('.task-type-tabs button').forEach(button => {button.disabled=true;});
+        save.textContent = 'Сохранить расписание';
+      }
+    } finally {window.__savingTask=false;save.disabled=false;}
   };
 
   /* ── Edit Task ──────────────────────────────────────────────── */

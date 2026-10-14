@@ -483,7 +483,7 @@ public class BotService {
                 LEFT JOIN today_prompts tp ON tp.subscription_id = s.id
                 LEFT JOIN today_completions tc ON tc.subscription_id = s.id
                 WHERE s.active = true AND t.kind != 'MANUAL' AND t.team_id """
-                    + (teamScope ? "= ?" : "IS NULL") + """
+                    + (teamScope ? "= ?" : "IS NULL AND s.chat_id = ?") + """
 
                   AND (tp.subscription_id IS NOT NULL
                        OR tc.subscription_id IS NOT NULL
@@ -495,6 +495,7 @@ public class BotService {
             Map<Long, Map<String, Object>> sectionMap = new LinkedHashMap<>();
             try (java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
                 if (teamScope) ps.setString(1, teamId);
+                else ps.setLong(1, chatId);
                 try (java.sql.ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     long uid = rs.getLong("chat_id");
@@ -664,6 +665,59 @@ public class BotService {
         }
     }
 
+    public Map<String, Object> apiGetProfile(long chatId, String requestedPeriod) {
+        String period = Set.of("week", "month", "year").contains(requestedPeriod) ? requestedPeriod : "month";
+        try (java.sql.Connection conn = db.getConnection()) {
+            ZoneId zone = ZoneId.of(userZone(conn, chatId));
+            LocalDate today = LocalDate.now(zone);
+            Map<LocalDate, Integer> counts = new TreeMap<>();
+            String sql = """
+                    SELECT (completed_at AT TIME ZONE ?)::date AS day, COUNT(*) AS count
+                    FROM completion_records WHERE chat_id = ? AND outcome = 'DONE' AND completed_at <= ?
+                    GROUP BY day ORDER BY day
+                    """;
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, zone.getId());
+                ps.setLong(2, chatId);
+                ps.setTimestamp(3, java.sql.Timestamp.from(Instant.now()));
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) counts.put(rs.getDate("day").toLocalDate(), rs.getInt("count"));
+                }
+            }
+            Map<String, Object> result = new LinkedHashMap<>(ProfileProgress.summarize(today, period, counts));
+            long active = 0;
+            for (Subscription sub : db.subscriptions().findAllByChatId(conn, chatId)) {
+                if (!sub.active() || sub.oneTimeDone()) continue;
+                TaskDefinition task = findTask(conn, sub.taskId());
+                if (task != null && canAccessTask(conn, chatId, task)) active++;
+            }
+            List<Map<String, Object>> items = new ArrayList<>();
+            try (java.sql.PreparedStatement ps = conn.prepareStatement("""
+                    SELECT task_id, COUNT(*) AS count FROM completion_records
+                    WHERE chat_id = ? AND outcome = 'DONE' AND completed_at >= ? AND completed_at < ?
+                    GROUP BY task_id ORDER BY count DESC
+                    """)) {
+                ps.setLong(1, chatId);
+                ps.setTimestamp(2, java.sql.Timestamp.from(ProfileProgress.periodStart(today, period).atStartOfDay(zone).toInstant()));
+                ps.setTimestamp(3, java.sql.Timestamp.from(today.plusDays(1).atStartOfDay(zone).toInstant()));
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        TaskDefinition task = findTask(conn, rs.getString("task_id"));
+                        if (task != null && canAccessTask(conn, chatId, task)) {
+                            items.add(Map.of("title", task.title(), "count", rs.getInt("count")));
+                        }
+                    }
+                }
+            }
+            result.put("activeReminders", active);
+            result.put("period", period);
+            result.put("items", items);
+            return result;
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Не удалось загрузить прогресс");
+        }
+    }
+
     public Map<String, Object> apiGetStats() {
         try (java.sql.Connection conn = db.getConnection()) {
             Map<String, Integer> taskCounts = new HashMap<>();
@@ -703,7 +757,7 @@ public class BotService {
                 if (membership == null) return Map.of("error", "Ты не состоишь в команде");
                 teamId = membership.teamId();
             }
-            ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : defaultZone;
+            ZoneId zone = zoneIdStr != null && !zoneIdStr.isBlank() ? ZoneId.of(zoneIdStr) : ZoneId.of(userZone(conn, chatId));
             LocalDate start = LocalDate.of(year, month, 1);
             int length = start.lengthOfMonth();
 
@@ -714,6 +768,7 @@ public class BotService {
 
             for (Subscription sub : db.subscriptions().loadAll(conn)) {
                 if (!sub.active()) continue;
+                if (!teamScope && sub.chatId() != chatId) continue;
                 TaskDefinition task = findTask(conn, sub.taskId());
                 // Personal calendar shows only the personal catalog; team calendar shows only
                 // that one team's own catalog — never both, never someone else's team.
@@ -768,7 +823,8 @@ public class BotService {
                     Map<String, Object> taskInfo = Map.of(
                             "id", task.id(),
                             "title", task.title(),
-                            "user", userName
+                            "user", userName,
+                            "time", String.join(", ", sub.dailyTimes())
                     );
                     for (LocalDate d : runDates) {
                         daysMap.get(d.toString()).add(taskInfo);
