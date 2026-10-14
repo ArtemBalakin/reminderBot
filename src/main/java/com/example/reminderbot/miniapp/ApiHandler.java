@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -31,9 +32,8 @@ public class ApiHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, X-Telegram-Init-Data");
         if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
             exchange.sendResponseHeaders(204, -1);
             return;
@@ -42,17 +42,24 @@ public class ApiHandler implements HttpHandler {
         String path = exchange.getRequestURI().getPath();
         Map<String, String> q = query(exchange.getRequestURI());
 
-        if (!TelegramInitDataValidator.isValid(q.get("initData"), botToken)) {
+        String signedData = exchange.getRequestHeaders().getFirst("X-Telegram-Init-Data");
+        if (signedData == null) signedData = q.get("initData"); // backward compatibility
+        if (!TelegramInitDataValidator.isValid(signedData, botToken)) {
             respondJson(exchange, 401, Map.of("error", "Не удалось подтвердить подлинность запроса Telegram"));
             return;
         }
-        long chatId = extractChatId(q.get("initData"));
+        long chatId = extractChatId(signedData);
         if (chatId == 0) {
             respondJson(exchange, 401, Map.of("error", "Не удалось определить пользователя Telegram"));
             return;
         }
 
         try {
+            Set<String> postPaths = Set.of("/api/subscribe", "/api/unsubscribe", "/api/task/new", "/api/task/update", "/api/task/edit", "/api/team/create", "/api/team/join", "/api/team/leave", "/api/team/members/promote", "/api/team/members/demote", "/api/team/members/remove", "/api/team/tasks/new");
+            if (postPaths.contains(path) && !"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                respondJson(exchange, 405, Map.of("error", "Method not allowed"));
+                return;
+            }
             Object result = switch (path) {
                 case "/api/tasks" -> botService.apiGetTasksPage(intParam(q, "page", 0));
                 case "/api/task" -> botService.apiGetTaskCard(chatId, q.getOrDefault("ref", "1"));
@@ -115,7 +122,7 @@ public class ApiHandler implements HttpHandler {
                 }
                 case "/api/task/new" -> {
                     JsonNode body = readJsonBody(exchange);
-                    yield botService.apiCreateTask(
+                    yield botService.apiCreateTask(chatId,
                             textNode(body, "title"),
                             textNode(body, "kindCode"),
                             textNode(body, "unit"),
@@ -125,7 +132,7 @@ public class ApiHandler implements HttpHandler {
                 }
                 case "/api/task/update" -> {
                     JsonNode body = readJsonBody(exchange);
-                    yield botService.apiUpdateTask(
+                    yield botService.apiUpdateTask(chatId,
                             textNode(body, "taskId"),
                             textNode(body, "title"),
                             textNode(body, "kindCode"),
@@ -168,16 +175,17 @@ public class ApiHandler implements HttpHandler {
                 }
                 case "/api/task/edit" -> {
                     JsonNode body = readJsonBody(exchange);
-                    yield botService.apiEditTask(
+                    yield botService.apiEditTask(chatId,
                             textNode(body, "taskId"),
                             textNode(body, "property"),
                             textNode(body, "value"));
                 }
                 default -> Map.of("error", "Unknown API path: " + path);
             };
-            respondJson(exchange, 200, result);
+            int code = result instanceof Map<?, ?> m && m.containsKey("error") ? 400 : 200;
+            respondJson(exchange, code, result);
         } catch (Exception e) {
-            respondJson(exchange, 500, Map.of("error", e.getMessage() == null ? "Internal error" : e.getMessage()));
+            respondJson(exchange, 500, Map.of("error", "Внутренняя ошибка сервера"));
         }
     }
 
