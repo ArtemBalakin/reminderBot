@@ -1,0 +1,40 @@
+/* Cat House visual system — deliberate light/dark parity */
+:root {color-scheme:light;--bg:#fff7e9;--bg2:#fffdf8;--text:#402717;--hint:#977c67;--btn:#278a5d;--btn-text:#fff;--accent:#b9783c;--success:#278a5d;--warn:#d79930;--danger:#bf5b56;--radius:21px;--radius-sm:13px;--shadow:0 9px 25px rgba(111,70,30,.09)}
+:root[data-theme="dark"] {color-scheme:dark;--bg:#101b2b;--bg2:#1c2b40;--text:#f7e8d6;--hint:#acb7c8;--btn:#7764f5;--btn-text:#fff;--accent:#cca56c;--success:#3cc89a;--warn:#ecc076;--danger:#fa8090;--shadow:0 12px 30px rgba(0,0,0,.2)}
+html,body {background:var(--bg);color:var(--text)}
+body {font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,sans-serif;background-image:radial-gradient(circle at 90% 5%,rgba(234,177,87,.13),transparent 40%)}
+:root[data-theme="dark"] body{background-image:radial-gradient(circle at 90% 0%,rgba(109,90,237,.14),transparent 38%)}
+#app {padding-top:15px}
+.page-header {letter-spacing:-.045em;font-weight:800;font-size:26px}
+.section-title {font-weight:750;letter-spacing:-.02em}
+.card {border:1px solid rgba(151,115,74,.1);box-shadow:var(--shadow)}
+:root[data-theme="dark"] .card{border:1px solid rgba(203,215,234,.07)}
+.card-clickable:active,.btn:active{transform:scale(.985)}
+#nav {background:color-mix(in srgb,var(--bg2) 92%,transparent);border-top:1px solid rgba(119,106,82,.13);box-shadow:0 -10px 30px rgba(29,19,9,.04)}
+.nav-btn.active{color:var(--btn)}
+.btn-primary{background:var(--btn);box-shadow:0 6px 13px color-mix(in srgb,var(--btn) 22%,transparent)}
+.scope-toggle{background:color-mix(in srgb,var(--accent) 12%,var(--bg2))}
+.scope-btn.active{background:var(--btn)}
+:root[data-theme="dark"] .scope-toggle{background:#132033}
+:root[data-theme="dark"] .scope-btn.active{background:var(--btn)}
+.cat-hero{min-height:208px;position:relative;overflow:hidden;border-radius:25px;margin-bottom:16px;background:linear-gradient(155deg,#ffdfa8,#f6bd83 53%,#e5a772);display:flex;align-items:flex-end;padding:18px 18px 18px 20px;box-shadow:0 10px 28px rgba(151,96,35,.18)}
+.cat-hero:before{content:"";position:absolute;inset:13px 20px 45px auto;width:134px;border-radius:85px 85px 15px 15px;background:linear-gradient(120deg,#fff7de,#fff1b7);border:8px solid #c68b57;box-shadow:inset 0 0 35px #fff}
+.cat-hero:after{content:"";position:absolute;width:180px;height:60px;bottom:-40px;right:-20px;background:#b37c4b;border-radius:50%}
+.cat-hero__copy{position:relative;z-index:2;max-width:62%;color:#56311d}
+.cat-hero__title{font-size:27px;font-weight:900;letter-spacing:-.055em}
+.cat-hero__sub{font-size:12px;line-height:1.55;margin-top:8px;font-weight:600;color:#815536}
+.cat-hero__cat{position:absolute;right:9px;bottom:12px;font-size:91px;line-height:1;transform:rotate(-7deg);filter:drop-shadow(0 8px 5px rgba(89,43,21,.16));z-index:1}
+:root[data-theme="dark"] .cat-hero{background:radial-gradient(circle at 75% 30%,#33447c,#1d2c54 56%,#17253d)}
+:root[data-theme="dark"] .cat-hero:before{background:linear-gradient(130deg,#9eb0f4,#273c75);border-color:#354a77}
+:root[data-theme="dark"] .cat-hero__copy{color:#fff1d8}
+:root[data-theme="dark"] .cat-hero__sub{color:#cdd5ef}
+.cat-progress{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:13px 16px;background:var(--bg2);border-radius:17px;margin-bottom:13px;font-size:13px;color:var(--hint)}
+.cat-progress strong{font-size:16px;color:var(--text)}
+.cat-theme-picker{display:flex;gap:8px;margin-bottom:16px}
+.cat-theme-picker button{flex:1;border:1px solid color-mix(in srgb,var(--hint) 27%,transparent);border-radius:15px;padding:14px 5px;background:var(--bg2);color:var(--text);font-weight:700}
+.cat-theme-picker button.selected{border:2px solid var(--btn);background:color-mix(in srgb,var(--btn) 11%,var(--bg2))}
+.cat-celebrate{text-align:center;border-radius:25px;background:linear-gradient(150deg,#fae3b1,#fff7e6);padding:35px 16px;color:#5b341c;box-shadow:var(--shadow)}
+.cat-celebrate .cat{font-size:100px;display:block;filter:drop-shadow(0 10px 8px rgba(161,87,44,.16))}
+.cat-celebrate h2{font-size:28px;margin:10px 0}
+:root[data-theme="dark"] .cat-celebrate{background:linear-gradient(150deg,#233455,#171f37);color:#fff1dd}
+@media(max-width:360px){.cat-hero{min-height:180px}.cat-hero__cat{font-size:72px}.cat-hero__title{font-size:23px}}
