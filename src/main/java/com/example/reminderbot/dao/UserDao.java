@@ -11,7 +11,7 @@ public class UserDao {
 
     public Map<Long, UserProfile> loadAll(Connection conn) throws SQLException {
         Map<Long, UserProfile> users = new HashMap<>();
-        String sql = "SELECT chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes FROM users";
+        String sql = "SELECT chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes, last_tomorrow_reminder_for_date FROM users";
         try (PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 long chatId = rs.getLong("chat_id");
@@ -22,7 +22,7 @@ public class UserDao {
                         rs.getString("zone_id"),
                         rs.getBoolean("alerts_enabled"),
                         rs.getInt("reping_minutes"),
-                        null
+                        rs.getString("last_tomorrow_reminder_for_date")
                 ));
             }
         }
@@ -30,7 +30,7 @@ public class UserDao {
     }
 
     public UserProfile findById(Connection conn, long chatId) throws SQLException {
-        String sql = "SELECT chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes FROM users WHERE chat_id = ?";
+        String sql = "SELECT chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes, last_tomorrow_reminder_for_date FROM users WHERE chat_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, chatId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -42,7 +42,7 @@ public class UserDao {
                             rs.getString("zone_id"),
                             rs.getBoolean("alerts_enabled"),
                             rs.getInt("reping_minutes"),
-                            null
+                            rs.getString("last_tomorrow_reminder_for_date")
                     );
                 }
             }
@@ -52,14 +52,15 @@ public class UserDao {
 
     public void upsert(Connection conn, UserProfile user) throws SQLException {
         String sql = """
-            INSERT INTO users (chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO users (chat_id, username, first_name, zone_id, alerts_enabled, reping_minutes, last_tomorrow_reminder_for_date, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (chat_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name,
                 zone_id = EXCLUDED.zone_id,
                 alerts_enabled = EXCLUDED.alerts_enabled,
                 reping_minutes = EXCLUDED.reping_minutes,
+                last_tomorrow_reminder_for_date = EXCLUDED.last_tomorrow_reminder_for_date,
                 updated_at = CURRENT_TIMESTAMP
             """;
         try {
@@ -70,6 +71,7 @@ public class UserDao {
                 ps.setString(4, user.zoneId());
                 ps.setBoolean(5, user.alertsEnabled());
                 ps.setInt(6, user.repingMinutes() == null ? 5 : user.repingMinutes());
+                ps.setString(7, user.lastTomorrowReminderForDate());
                 ps.executeUpdate();
             }
             conn.commit();
