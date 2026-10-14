@@ -23,7 +23,7 @@ body {font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,sans-serif
 .cat-hero__copy{position:relative;z-index:2;max-width:62%;color:#56311d}
 .cat-hero__title{font-size:27px;font-weight:900;letter-spacing:-.055em}
 .cat-hero__sub{font-size:12px;line-height:1.55;margin-top:8px;font-weight:600;color:#815536}
-.cat-hero__cat{position:absolute;right:9px;bottom:12px;font-size:91px;line-height:1;transform:rotate(-7deg);filter:drop-shadow(0 8px 5px rgba(89,43,21,.16));z-index:1}
+.cat-hero__cat{position:absolute;right:-7px;bottom:-8px;width:66%;max-height:218px;object-fit:contain;object-position:right bottom;filter:drop-shadow(0 8px 5px rgba(89,43,21,.16));z-index:1}
 :root[data-theme="dark"] .cat-hero{background:radial-gradient(circle at 75% 30%,#33447c,#1d2c54 56%,#17253d)}
 :root[data-theme="dark"] .cat-hero:before{background:linear-gradient(130deg,#9eb0f4,#273c75);border-color:#354a77}
 :root[data-theme="dark"] .cat-hero__copy{color:#fff1d8}
@@ -34,7 +34,7 @@ body {font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,sans-serif
 .cat-theme-picker button{flex:1;border:1px solid color-mix(in srgb,var(--hint) 27%,transparent);border-radius:15px;padding:14px 5px;background:var(--bg2);color:var(--text);font-weight:700}
 .cat-theme-picker button.selected{border:2px solid var(--btn);background:color-mix(in srgb,var(--btn) 11%,var(--bg2))}
 .cat-celebrate{text-align:center;border-radius:25px;background:linear-gradient(150deg,#fae3b1,#fff7e6);padding:35px 16px;color:#5b341c;box-shadow:var(--shadow)}
-.cat-celebrate .cat{font-size:100px;display:block;filter:drop-shadow(0 10px 8px rgba(161,87,44,.16))}
+.cat-celebrate .cat{height:215px;max-width:100%;margin:0 auto;display:block;filter:drop-shadow(0 10px 8px rgba(161,87,44,.16))}
 .cat-celebrate h2{font-size:28px;margin:10px 0}
 :root[data-theme="dark"] .cat-celebrate{background:linear-gradient(150deg,#233455,#171f37);color:#fff1dd}
-@media(max-width:360px){.cat-hero{min-height:180px}.cat-hero__cat{font-size:72px}.cat-hero__title{font-size:23px}}
+@media(max-width:360px){.cat-hero{min-height:180px}.cat-hero__cat{width:63%}.cat-hero__title{font-size:23px}}
