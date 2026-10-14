@@ -1,35 +1,32 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>Планировщик</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="theme-color" content="#fff8ed"/>
+  <title>Мой дом — Reminder Bot</title>
   <script src="https://telegram.org/js/telegram-web-app.js?61"></script>
-  <link rel="stylesheet" href="/static/miniapp.css" />
-  <link rel="stylesheet" href="/static/cat-theme.css" />
+  <link rel="stylesheet" href="/static/miniapp.css"/>
+  <link rel="stylesheet" href="/static/cat-theme.css"/>
+  <link rel="stylesheet" href="/static/visual-v2.css"/>
 </head>
 <body>
-  <div id="app"></div>
-  <nav id="nav">
-    <button class="nav-btn active" data-page="tasks">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" fill="currentColor"/></svg>
-      <span>Дела</span>
+  <main id="app" aria-live="polite"></main>
+  <nav id="nav" aria-label="Главное меню">
+    <button type="button" class="nav-btn active" data-page="today" aria-label="Дом">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg><span>Дом</span>
     </button>
-    <button class="nav-btn" data-page="subs">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z" fill="currentColor"/></svg>
-      <span>Мои</span>
+    <button type="button" class="nav-btn" data-page="tasks" aria-label="Каталог дел">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 9h9M8 14h9M8 19h6"/></svg><span>Дела</span>
     </button>
-    <button class="nav-btn" data-page="today">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z" fill="currentColor"/></svg>
-      <span>Сегодня</span>
+    <button type="button" class="nav-btn nav-create" data-page="newTask" aria-label="Создать дело">
+      <span class="nav-create-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><span>Добавить</span>
     </button>
-    <button class="nav-btn" data-page="calendar">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1.0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7v-5z" fill="currentColor"/></svg>
-      <span>Календарь</span>
+    <button type="button" class="nav-btn" data-page="calendar" aria-label="Календарь">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 2v6M17 2v6M3 11h18"/></svg><span>Календарь</span>
     </button>
-    <button class="nav-btn" data-page="settings">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" fill="currentColor"/></svg>
-      <span>Настройки</span>
+    <button type="button" class="nav-btn" data-page="settings" aria-label="Профиль и настройки">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-5 4-7 8-7s7 2 8 7"/></svg><span>Профиль</span>
     </button>
   </nav>
   <script src="/static/miniapp.js"></script>

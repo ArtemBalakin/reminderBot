@@ -469,7 +469,7 @@ public class BotService {
                 )
                 SELECT
                     u.chat_id, u.username, u.first_name, u.zone_id,
-                    t.title AS task_title,
+                    t.id AS task_id, t.title AS task_title,
                     s.next_run_at,
                     tp.state AS prompt_state,
                     COALESCE(tc.cnt, 0) AS completion_count,
@@ -540,6 +540,8 @@ public class BotService {
                         return s;
                     });
                     Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskId", rs.getString("task_id"));
+                    row.put("mine", uid == chatId);
                     row.put("taskTitle", taskTitle);
                     row.put("status", status);
                     row.put("done", done);
@@ -553,6 +555,71 @@ public class BotService {
         } catch (java.sql.SQLException e) {
             System.err.println("apiGetTodayBoard SQL error: " + e.getMessage());
             return Map.of("sections", List.of());
+        }
+    }
+
+
+    /**
+     * Complete the current user's own scheduled occurrence. Team members cannot
+     * mark somebody else's reminder as completed.
+     */
+    public Map<String, Object> apiCompleteTodayTask(long chatId, String taskId) {
+        if (taskId == null || taskId.isBlank()) return Map.of("error", "Не указано дело");
+        try (java.sql.Connection conn = db.getConnection()) {
+            TaskDefinition task = findTask(conn, taskId);
+            if (task == null || !canAccessTask(conn, chatId, task))
+                return Map.of("error", "Дело недоступно");
+            Subscription sub = findUserSubscription(conn, chatId, task.id());
+            if (sub == null || !sub.active())
+                return Map.of("error", "Сначала настрой своё расписание");
+            ZoneId zone = ZoneId.of(userZone(conn, chatId));
+            LocalDate today = LocalDate.now(zone);
+            // A repeated click must not create repeated completion records.
+            String check = """
+                    SELECT 1 FROM completion_records
+                    WHERE subscription_id = ? AND chat_id = ? AND outcome = 'DONE'
+                      AND (scheduled_for AT TIME ZONE ?)::date = ?
+                    LIMIT 1
+                    """;
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(check)) {
+                ps.setString(1, sub.id());
+                ps.setLong(2, chatId);
+                ps.setString(3, zone.getId());
+                ps.setObject(4, today);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) return Map.of("ok", true, "alreadyDone", true);
+                }
+            }
+            ActivePrompt duePrompt = null;
+            for (ActivePrompt prompt : db.prompts().findAllByChatId(conn, chatId)) {
+                if (prompt.subscriptionId().equals(sub.id())
+                        && LocalDate.ofInstant(prompt.scheduledFor(), zone).equals(today)
+                        && (duePrompt == null || prompt.scheduledFor().isAfter(duePrompt.scheduledFor()))) {
+                    duePrompt = prompt;
+                }
+            }
+            Instant scheduledFor;
+            if (duePrompt != null) {
+                scheduledFor = duePrompt.scheduledFor();
+            } else if (sub.nextRunAt() != null
+                    && LocalDate.ofInstant(sub.nextRunAt(), zone).equals(today)
+                    && !sub.oneTimeDone()) {
+                scheduledFor = sub.nextRunAt();
+            } else {
+                return Map.of("error", "На сегодня у тебя нет активного напоминания по этому делу");
+            }
+            db.completions().upsert(conn, new CompletionRecord(
+                    duePrompt == null ? null : duePrompt.id(), sub.id(), task.id(),
+                    chatId, scheduledFor, Instant.now()));
+            if (duePrompt != null) {
+                db.prompts().delete(conn, duePrompt.id());
+            } else {
+                Subscription next = advanceSubscription(conn, sub, task, scheduledFor, Instant.now());
+                db.subscriptions().upsert(conn, next);
+            }
+            return Map.of("ok", true, "title", task.title());
+        } catch (java.sql.SQLException e) {
+            return Map.of("error", "Ошибка базы данных");
         }
     }
 

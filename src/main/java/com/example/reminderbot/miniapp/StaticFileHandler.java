@@ -29,6 +29,7 @@ public class StaticFileHandler implements HttpHandler {
             return;
         }
         String contentType = file.endsWith(".css") ? "text/css; charset=utf-8"
+                : file.endsWith(".webp") ? "image/webp"
                 : file.endsWith(".svg") ? "image/svg+xml; charset=utf-8"
                 : file.endsWith(".js") ? "application/javascript; charset=utf-8"
                 : "application/octet-stream";

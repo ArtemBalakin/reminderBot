@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feat/reminder-fixes-and-cat-themes
+      - fix/real-miniapp-redesign
   pull_request:
     branches:
       - main
@@ -16,6 +17,8 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Validate Mini App JavaScript
+        run: node --check src/main/resources/miniapp/miniapp.js
       - name: Compile and test
         run: mvn -B verify
       - name: Check Docker build
