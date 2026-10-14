@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 280" role="img" aria-label="Кот отдыхает в доме при лунном свете">
+<defs>
+<linearGradient id="sun" x2="0" y2="1"><stop stop-color="#273966"/><stop offset="1" stop-color="#4F5E90"/></linearGradient>
+<linearGradient id="fur" x2="0" y2="1"><stop stop-color="#9B98C7"/><stop offset="1" stop-color="#55588C"/></linearGradient>
+<linearGradient id="cush" x2="0" y2="1"><stop stop-color="#536F85"/><stop offset="1" stop-color="#2D516D"/></linearGradient>
+</defs>
+<g opacity=".95"><path d="M175 20Q175 4 191 4H300Q320 4 320 24V170H175Z" fill="#253B63"/><path d="M187 27Q187 15 199 15H295Q308 15 308 27V158H187Z" fill="url(#sun)"/><path d="M244 17V158M188 92H308" stroke="#506393" stroke-width="9"/><path d="M220 51Q232 40 246 50M277 58Q293 40 300 57" fill="none" stroke="#A9C9FF" stroke-width="7" opacity=".7"/></g>
+<g><path d="M65 221L48 116M65 189L24 146M64 165L95 109M65 197L113 168" fill="none" stroke="#38736F" stroke-width="7" stroke-linecap="round"/><path d="M48 123Q7 109 17 84Q43 80 48 123M24 148Q-6 139 2 120Q24 120 24 148M98 113Q80 90 106 76Q125 94 98 113M112 168Q126 131 146 149Q137 175 112 168" fill="#497F78"/><path d="M37 208H91L83 258H48Z" fill="#554D73"/><path d="M35 207Q35 199 42 199H88Q95 199 95 207Z" fill="#6A648D"/></g>
+<ellipse cx="244" cy="257" rx="102" ry="19" fill="#9B633B" opacity=".14"/>
+<ellipse cx="246" cy="238" rx="105" ry="28" fill="url(#cush)" stroke="#2D526A" stroke-width="5"/>
+<path d="M151 222Q129 206 140 192Q149 183 164 201" fill="none" stroke="#5B578D" stroke-width="16" stroke-linecap="round"/>
+<ellipse cx="237" cy="200" rx="75" ry="49" fill="url(#fur)" stroke="#4A4B7B" stroke-width="4"/>
+<path d="M178 179L180 119Q180 105 192 116L215 139M253 139L282 110Q294 103 291 122L291 182" fill="url(#fur)" stroke="#4A4B7B" stroke-width="4" stroke-linejoin="round"/>
+<path d="M189 142L188 122L206 145M263 145L281 122L282 146" fill="#F49A93"/>
+<ellipse cx="236" cy="176" rx="61" ry="58" fill="url(#fur)" stroke="#4A4B7B" stroke-width="3"/>
+<path d="M193 192Q206 184 218 192M252 192Q264 184 275 192" fill="none" stroke="#593B2A" stroke-width="5" stroke-linecap="round"/>
+<path d="M230 194L244 194L237 202Z" fill="#B9635A"/>
+<path d="M237 202Q228 213 220 205M237 202Q245 213 255 204" fill="none" stroke="#6B402B" stroke-width="2.8" stroke-linecap="round"/>
+<path d="M203 207L168 203M205 213L171 218M268 207L302 204M269 213L302 220" stroke="#A35637" stroke-width="2.5" stroke-linecap="round"/>
+<ellipse cx="200" cy="211" rx="10" ry="6" fill="#F6AB92" opacity=".9"/><ellipse cx="270" cy="211" rx="10" ry="6" fill="#F6AB92" opacity=".9"/>
+<ellipse cx="199" cy="236" rx="25" ry="13" fill="#B1AADB"/><ellipse cx="273" cy="236" rx="25" ry="13" fill="#B1AADB"/>
+<path d="M318 92L325 109L342 116L325 123L318 140L311 123L294 116L311 109Z" fill="#D7E4FF" opacity=".7"/>
+<path d="M217 52a24 24 0 1 1-21-38 23 23 0 0 0 21 38Z" fill="#F9E9BC" opacity=".95"/><circle cx="275" cy="40" r="4" fill="#F9E9BC"/><circle cx="298" cy="68" r="3" fill="#F9E9BC"/></svg>
