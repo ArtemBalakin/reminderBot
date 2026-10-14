@@ -469,7 +469,7 @@ public class BotService {
                 )
                 SELECT
                     u.chat_id, u.username, u.first_name, u.zone_id,
-                    t.title AS task_title,
+                    t.id AS task_id, t.title AS task_title,
                     s.next_run_at,
                     tp.state AS prompt_state,
                     COALESCE(tc.cnt, 0) AS completion_count,
@@ -540,6 +540,7 @@ public class BotService {
                         return s;
                     });
                     Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskId", rs.getString("task_id"));
                     row.put("taskTitle", taskTitle);
                     row.put("status", status);
                     row.put("done", done);
